@@ -1,0 +1,688 @@
+[
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "AI_GATEWAY_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "ai-gateway",
+    "is_aggregator": true,
+    "label": "Vercel AI Gateway",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "alibaba-cloud",
+      "aliyun",
+      "dashscope",
+      "qwen"
+    ],
+    "api_key_env_vars": [
+      "DASHSCOPE_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "base_url_env": "DASHSCOPE_BASE_URL",
+    "id": "alibaba",
+    "is_aggregator": false,
+    "label": "Alibaba",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "alibaba-coding",
+      "alibaba_coding",
+      "alibaba_coding_plan"
+    ],
+    "api_key_env_vars": [
+      "ALIBABA_CODING_PLAN_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+    "base_url_env": "ALIBABA_CODING_PLAN_BASE_URL",
+    "id": "alibaba-coding-plan",
+    "is_aggregator": false,
+    "label": "Alibaba Coding Plan",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "claude",
+      "claude-code"
+    ],
+    "api_key_env_vars": [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN"
+    ],
+    "auth_type": "api_key",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "anthropic",
+    "is_aggregator": false,
+    "label": "Anthropic",
+    "source": "models.dev",
+    "transport": "anthropic_messages"
+  },
+  {
+    "aliases": [
+      "arcee-ai",
+      "arceeai"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "api_key",
+    "base_url": "https://api.arcee.ai/api/v1",
+    "base_url_env": "ARCEE_BASE_URL",
+    "id": "arcee",
+    "is_aggregator": false,
+    "label": "arcee",
+    "source": "hermes",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [],
+    "auth_type": "api_key",
+    "base_url": "",
+    "base_url_env": "AZURE_FOUNDRY_BASE_URL",
+    "id": "azure-foundry",
+    "is_aggregator": false,
+    "label": "azure-foundry",
+    "source": "hermes",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "amazon",
+      "amazon-bedrock",
+      "aws",
+      "aws-bedrock"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "aws_sdk",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "bedrock",
+    "is_aggregator": false,
+    "label": "AWS Bedrock",
+    "source": "hermes",
+    "transport": "bedrock_converse"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "GITHUB_TOKEN",
+      "COPILOT_GITHUB_TOKEN",
+      "GH_TOKEN"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.githubcopilot.com",
+    "base_url_env": "",
+    "id": "copilot",
+    "is_aggregator": false,
+    "label": "GitHub Copilot",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "github-copilot-acp"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "external_process",
+    "base_url": "acp://copilot",
+    "base_url_env": "COPILOT_ACP_BASE_URL",
+    "id": "copilot-acp",
+    "is_aggregator": false,
+    "label": "GitHub Copilot ACP",
+    "source": "hermes",
+    "transport": "codex_responses"
+  },
+  {
+    "aliases": [
+      "ollama"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "custom",
+    "is_aggregator": false,
+    "label": "custom",
+    "source": "alias_target",
+    "transport": ""
+  },
+  {
+    "aliases": [
+      "deep-seek"
+    ],
+    "api_key_env_vars": [
+      "DEEPSEEK_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.deepseek.com",
+    "base_url_env": "DEEPSEEK_BASE_URL",
+    "id": "deepseek",
+    "is_aggregator": false,
+    "label": "DeepSeek",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GEMINI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "gemini",
+    "is_aggregator": false,
+    "label": "Google",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "copilot",
+      "github"
+    ],
+    "api_key_env_vars": [
+      "GITHUB_TOKEN",
+      "COPILOT_GITHUB_TOKEN",
+      "GH_TOKEN"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.githubcopilot.com",
+    "base_url_env": "",
+    "id": "github-copilot",
+    "is_aggregator": false,
+    "label": "GitHub Copilot",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "gmi-cloud",
+      "gmicloud"
+    ],
+    "api_key_env_vars": [
+      "GMI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.gmi-serving.com/v1",
+    "base_url_env": "GMI_BASE_URL",
+    "id": "gmi",
+    "is_aggregator": false,
+    "label": "GMI Cloud",
+    "source": "hermes",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "gemini-cli",
+      "gemini-oauth"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "oauth_external",
+    "base_url": "cloudcode-pa://google",
+    "base_url_env": "",
+    "id": "google-gemini-cli",
+    "is_aggregator": false,
+    "label": "google-gemini-cli",
+    "source": "hermes",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "hf",
+      "hugging-face",
+      "huggingface-hub"
+    ],
+    "api_key_env_vars": [
+      "HF_TOKEN"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://router.huggingface.co/v1",
+    "base_url_env": "HF_BASE_URL",
+    "id": "huggingface",
+    "is_aggregator": true,
+    "label": "Hugging Face",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "kilo-code",
+      "kilo-gateway",
+      "kilocode"
+    ],
+    "api_key_env_vars": [
+      "KILO_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.kilo.ai/api/gateway",
+    "base_url_env": "KILOCODE_BASE_URL",
+    "id": "kilo",
+    "is_aggregator": true,
+    "label": "Kilo Gateway",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "KILO_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.kilo.ai/api/gateway",
+    "base_url_env": "KILOCODE_BASE_URL",
+    "id": "kilocode",
+    "is_aggregator": true,
+    "label": "Kilo Gateway",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "KIMI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.kimi.com/coding/v1",
+    "base_url_env": "KIMI_BASE_URL",
+    "id": "kimi-coding",
+    "is_aggregator": false,
+    "label": "Kimi For Coding",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "KIMI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.kimi.com/coding/v1",
+    "base_url_env": "KIMI_BASE_URL",
+    "id": "kimi-coding-cn",
+    "is_aggregator": false,
+    "label": "Kimi For Coding",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "kimi",
+      "kimi-coding",
+      "kimi-coding-cn",
+      "moonshot"
+    ],
+    "api_key_env_vars": [
+      "KIMI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.kimi.com/coding/v1",
+    "base_url_env": "KIMI_BASE_URL",
+    "id": "kimi-for-coding",
+    "is_aggregator": false,
+    "label": "Kimi For Coding",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "lm-studio",
+      "lm_studio",
+      "lmstudio"
+    ],
+    "api_key_env_vars": [
+      "LMSTUDIO_API_KEY",
+      "LM_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "http://127.0.0.1:1234/v1",
+    "base_url_env": "LM_BASE_URL",
+    "id": "lmstudio",
+    "is_aggregator": false,
+    "label": "LM Studio",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "llama-cpp",
+      "llama.cpp",
+      "llamacpp",
+      "vllm"
+    ],
+    "api_key_env_vars": [],
+    "auth_type": "",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "local",
+    "is_aggregator": false,
+    "label": "Local endpoint",
+    "source": "alias_target",
+    "transport": ""
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "MINIMAX_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.minimax.io/anthropic/v1",
+    "base_url_env": "MINIMAX_BASE_URL",
+    "id": "minimax",
+    "is_aggregator": false,
+    "label": "MiniMax (minimax.io)",
+    "source": "models.dev",
+    "transport": "anthropic_messages"
+  },
+  {
+    "aliases": [
+      "minimax-china",
+      "minimax_cn"
+    ],
+    "api_key_env_vars": [
+      "MINIMAX_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.minimaxi.com/anthropic/v1",
+    "base_url_env": "MINIMAX_CN_BASE_URL",
+    "id": "minimax-cn",
+    "is_aggregator": false,
+    "label": "MiniMax (minimaxi.com)",
+    "source": "models.dev",
+    "transport": "anthropic_messages"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "MINIMAX_API_KEY"
+    ],
+    "auth_type": "oauth_external",
+    "base_url": "https://api.minimax.io/anthropic",
+    "base_url_env": "",
+    "id": "minimax-oauth",
+    "is_aggregator": false,
+    "label": "MiniMax (minimax.io)",
+    "source": "models.dev",
+    "transport": "anthropic_messages"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [],
+    "auth_type": "oauth_device_code",
+    "base_url": "https://inference-api.nousresearch.com/v1",
+    "base_url_env": "",
+    "id": "nous",
+    "is_aggregator": false,
+    "label": "Nous Portal",
+    "source": "hermes",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "build-nvidia",
+      "nemotron",
+      "nim",
+      "nvidia-nim"
+    ],
+    "api_key_env_vars": [
+      "NVIDIA_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "base_url_env": "NVIDIA_BASE_URL",
+    "id": "nvidia",
+    "is_aggregator": false,
+    "label": "Nvidia",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "OLLAMA_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://ollama.com/v1",
+    "base_url_env": "OLLAMA_BASE_URL",
+    "id": "ollama-cloud",
+    "is_aggregator": false,
+    "label": "Ollama Cloud",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "OPENAI_API_KEY"
+    ],
+    "auth_type": "oauth_external",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "base_url_env": "",
+    "id": "openai-codex",
+    "is_aggregator": false,
+    "label": "OpenAI Codex",
+    "source": "models.dev",
+    "transport": "codex_responses"
+  },
+  {
+    "aliases": [
+      "opencode-zen",
+      "zen"
+    ],
+    "api_key_env_vars": [
+      "OPENCODE_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://opencode.ai/zen/v1",
+    "base_url_env": "OPENCODE_ZEN_BASE_URL",
+    "id": "opencode",
+    "is_aggregator": true,
+    "label": "OpenCode Zen",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "go",
+      "opencode-go-sub"
+    ],
+    "api_key_env_vars": [
+      "OPENCODE_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "base_url_env": "OPENCODE_GO_BASE_URL",
+    "id": "opencode-go",
+    "is_aggregator": true,
+    "label": "OpenCode Go",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "OPENCODE_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://opencode.ai/zen/v1",
+    "base_url_env": "OPENCODE_ZEN_BASE_URL",
+    "id": "opencode-zen",
+    "is_aggregator": true,
+    "label": "OpenCode Zen",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "openai"
+    ],
+    "api_key_env_vars": [
+      "OPENROUTER_API_KEY",
+      "OPENAI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://openrouter.ai/api/v1",
+    "base_url_env": "OPENROUTER_BASE_URL",
+    "id": "openrouter",
+    "is_aggregator": true,
+    "label": "OpenRouter",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [],
+    "api_key_env_vars": [
+      "DASHSCOPE_API_KEY"
+    ],
+    "auth_type": "oauth_external",
+    "base_url": "https://portal.qwen.ai/v1",
+    "base_url_env": "HERMES_QWEN_BASE_URL",
+    "id": "qwen-oauth",
+    "is_aggregator": false,
+    "label": "Alibaba",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "stepfun-open",
+      "stepfun-open-platform"
+    ],
+    "api_key_env_vars": [
+      "STEPFUN_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.stepfun.com/v1",
+    "base_url_env": "STEPFUN_BASE_URL",
+    "billing_scope": "open_platform",
+    "id": "stepfun-open",
+    "is_aggregator": false,
+    "label": "StepFun Open Platform",
+    "source": "local",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "step",
+      "stepfun-coding-plan"
+    ],
+    "api_key_env_vars": [
+      "STEPFUN_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.stepfun.com/step_plan/v1",
+    "base_url_env": "STEPFUN_BASE_URL",
+    "billing_scope": "step_plan",
+    "id": "stepfun",
+    "is_aggregator": false,
+    "label": "StepFun Step Plan",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "tencent",
+      "tencent-cloud",
+      "tencentmaas",
+      "tokenhub"
+    ],
+    "api_key_env_vars": [
+      "TENCENT_TOKENHUB_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://tokenhub.tencentmaas.com/v1",
+    "base_url_env": "TOKENHUB_BASE_URL",
+    "id": "tencent-tokenhub",
+    "is_aggregator": false,
+    "label": "Tencent TokenHub",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "ai-gateway",
+      "aigateway",
+      "vercel-ai-gateway"
+    ],
+    "api_key_env_vars": [
+      "AI_GATEWAY_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "",
+    "base_url_env": "",
+    "id": "vercel",
+    "is_aggregator": true,
+    "label": "Vercel AI Gateway",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "grok",
+      "x-ai",
+      "x.ai"
+    ],
+    "api_key_env_vars": [
+      "XAI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.x.ai/v1",
+    "base_url_env": "XAI_BASE_URL",
+    "id": "xai",
+    "is_aggregator": false,
+    "label": "xAI",
+    "source": "models.dev",
+    "transport": "codex_responses"
+  },
+  {
+    "aliases": [
+      "mimo",
+      "xiaomi-mimo"
+    ],
+    "api_key_env_vars": [
+      "XIAOMI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.xiaomimimo.com/v1",
+    "base_url_env": "XIAOMI_BASE_URL",
+    "id": "xiaomi",
+    "is_aggregator": false,
+    "label": "Xiaomi MiMo",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  },
+  {
+    "aliases": [
+      "glm",
+      "z-ai",
+      "z.ai",
+      "zhipu"
+    ],
+    "api_key_env_vars": [
+      "ZHIPU_API_KEY",
+      "GLM_API_KEY",
+      "ZAI_API_KEY",
+      "Z_AI_API_KEY"
+    ],
+    "auth_type": "api_key",
+    "base_url": "https://api.z.ai/api/paas/v4",
+    "base_url_env": "GLM_BASE_URL",
+    "id": "zai",
+    "is_aggregator": false,
+    "label": "Z.AI",
+    "source": "models.dev",
+    "transport": "openai_chat"
+  }
+]

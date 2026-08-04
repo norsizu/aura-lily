@@ -1,0 +1,25 @@
+menu "Aura Lily"
+
+config AURA_WS_URI_DEFAULT
+    string "Default Aura Lily WebSocket server URI"
+    default ""
+    help
+        Optional WebSocket endpoint used when no server URL has been saved
+        through the provisioning page. Leave empty for a self-configured
+        public build and set the address during provisioning.
+
+config AURA_OTA_MANIFEST_URL
+    string "OTA application manifest URL"
+    default ""
+    help
+        HTTPS URL for the application OTA manifest. Leave empty to keep OTA
+        disabled until you configure your own release host.
+
+config AURA_OTA_RESOURCES_MANIFEST_URL
+    string "OTA resource manifest URL"
+    default ""
+    help
+        HTTPS URL for the resource-only OTA manifest. Leave empty when your
+        deployment does not publish resources separately.
+
+endmenu

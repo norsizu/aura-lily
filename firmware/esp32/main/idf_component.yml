@@ -1,0 +1,10 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espressif/mdns: "^1.2.0"
+  espressif/esp_websocket_client: "^1.2.0"
+  espressif/esp-sr: "~1.4.2"
+  espressif/esp_audio_simple_player: "^0.9.6"
+  espressif/esp_codec_dev: "1.5.7"
+  78/esp-opus-encoder: "~2.4.1"
+  idf:
+    version: ">=5.0.0"

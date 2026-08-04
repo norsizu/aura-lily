@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Aura Lily：在局域网广播 _aura-lily._tcp 服务，供 ESP32 固件 mDNS 自动发现网关。
+         Docker Desktop for Mac 的容器无法向局域网发送 mDNS 组播，所以由宿主机代播。
+         安装：bash tools/macos/install_mdns_service.sh -->
+    <key>Label</key>
+    <string>com.aura-lily.mdns</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/dns-sd</string>
+        <string>-R</string>
+        <string>aura-lily</string>
+        <string>_aura-lily._tcp</string>
+        <string>.</string>
+        <string>8787</string>
+        <string>path=/ws</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/aura-lily-mdns.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/aura-lily-mdns.log</string>
+</dict>
+</plist>

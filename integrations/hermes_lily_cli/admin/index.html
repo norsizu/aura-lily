@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aura Lily Admin · Control Center</title>
+  <link rel="stylesheet" href="/admin/style.css?v=20260709-ui-saas2">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AL</div>
+        <div>
+          <h1>Aura Lily</h1>
+          <p>Control Center</p>
+        </div>
+      </div>
+      <nav class="nav" aria-label="后台导航">
+        <div class="nav-group">
+          <p class="nav-group-title">概览</p>
+          <a href="#dashboard" class="nav-item active" data-panel-link="dashboard">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+            <span>仪表盘</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-group-title">模型服务</p>
+          <a href="#chat-model" class="nav-item" data-panel-link="chat-model">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            <span>对话模型</span>
+          </a>
+          <a href="#audio" class="nav-item" data-panel-link="audio">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            <span>语音服务</span>
+          </a>
+          <a href="#hermes" class="nav-item" data-panel-link="hermes">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+            <span>Hermes 引擎</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <p class="nav-group-title">助手行为</p>
+          <a href="#behavior" class="nav-item" data-panel-link="behavior">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>行为与快答</span>
+          </a>
+          <a href="#soul" class="nav-item" data-panel-link="soul">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            <span>人格设定</span>
+          </a>
+          <a href="#state" class="nav-item" data-panel-link="state">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span>状态与世界</span>
+          </a>
+        </div>
+      </nav>
+      <div class="sidebar-footnote">
+        <span>Runtime</span>
+        <strong>Local Bridge · 8765</strong>
+      </div>
+      <section class="login-box">
+        <label for="adminUser">用户名</label>
+        <input id="adminUser" autocomplete="username" placeholder="admin">
+        <label for="adminPassword">密码</label>
+        <input id="adminPassword" type="password" autocomplete="current-password" placeholder="后台登录密码">
+        <p>只保护本地后台，不是模型 API Key。</p>
+        <div class="actions compact">
+          <button id="load">登录 / 刷新</button>
+          <button id="forget" class="secondary">退出</button>
+        </div>
+        <div id="globalStatus" class="status"></div>
+      </section>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span>Aura Lily Admin</span>
+          <strong>本地模型、语音和人格运行控制台</strong>
+        </div>
+        <div class="topbar-actions">
+          <span id="connectionBadge" class="badge muted">未连接</span>
+          <span class="badge muted">Local Runtime</span>
+        </div>
+      </header>
+
+      <section id="dashboard" class="panel-page active" data-panel="dashboard">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Overview</p>
+            <h2>仪表盘</h2>
+            <p class="page-description">集中查看 Hermes、Aura 对话路由、语音链路和人格状态，确认当前设备会走哪条执行路径。</p>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span class="metric-label">Hermes 主模型</span>
+            <strong id="dashHermesModel">未读取</strong>
+            <p id="dashHermesPath"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Aura 对话路由</span>
+            <strong id="dashAuraMode">未读取</strong>
+            <p id="dashAuraTts"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">语音输入</span>
+            <strong id="dashAsr">未读取</strong>
+            <p id="dashAsrPath"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">人格网关</span>
+            <strong id="dashPersona">未读取</strong>
+            <p id="dashPersonaScope"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">用户位置</span>
+            <strong id="dashLocation">未读取</strong>
+            <p id="dashLocationDetail"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">关系状态</span>
+            <strong id="dashRelationship">未读取</strong>
+            <p id="dashActivity"></p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">世界模型</span>
+            <strong id="dashWorld">未读取</strong>
+            <p id="dashWorldDetail"></p>
+          </article>
+        </div>
+        <section class="panel">
+          <h3>配置归属</h3>
+          <div class="ownership-grid">
+            <div><b>Hermes 引擎</b><span>写入 Hermes 私有配置，决定 Hermes 执行桥默认走哪个 provider/model。</span></div>
+            <div><b>对话模型</b><span>写入 Aura runtime JSON。普通问答可直接调用 LLM；复杂任务再交给 Hermes CLI Agent。</span></div>
+            <div><b>语音服务</b><span>ASR 可走本机 HTTP 或云端 API；TTS 可配置 API、音色和输出格式。</span></div>
+            <div><b>人格数据</b><span>读取 mounted runtime volume 中的 Soul 与 companion.db。</span></div>
+          </div>
+        </section>
+      </section>
+
+      <section id="chat-model" class="panel-page" data-panel="chat-model">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Model Service</p>
+            <h2>对话模型</h2>
+            <p class="page-description">配置 Aura 自己的对话模型与路由。这里决定"她先怎么回应"，不等同于 Hermes 的执行模型。</p>
+          </div>
+          <span id="auraRuntimeBadge" class="badge muted">未读取</span>
+        </div>
+        <section class="panel">
+          <h3>Aura 对话模型</h3>
+          <p class="hint">决定普通对话的回复路由。直接调用 LLM 或通过 Hermes CLI Agent 处理复杂任务。</p>
+          <p class="owner-note">写入目标：<span id="auraRuntimePath">Aura runtime JSON</span></p>
+          <div class="model-profile-bar">
+            <div>
+              <label for="auraModelProfile">已保存的对话模型</label>
+              <select id="auraModelProfile"></select>
+            </div>
+            <div>
+              <label for="auraModelProfileLabel">保存名称</label>
+              <input id="auraModelProfileLabel" placeholder="例如：StepFun 日常对话">
+            </div>
+            <div id="auraQuotaCard" class="quota-card muted"><strong>Aura 对话模型额度</strong><span>未读取</span></div>
+          </div>
+          <label for="auraModelMode">对话路由</label>
+          <select id="auraModelMode">
+            <option value="aura_model">直接调用 Aura LLM</option>
+            <option value="hermes_main">通过 Hermes CLI Agent</option>
+          </select>
+          <div id="auraModelFields">
+            <label for="auraProviderPreset">上游厂商</label>
+            <select id="auraProviderPreset"></select>
+            <p class="hint" id="auraProviderHint"></p>
+            <div class="row">
+              <div><label for="auraModelProvider">Provider</label><input id="auraModelProvider" placeholder="随厂商选择，也可手动输入"></div>
+              <div>
+                <label for="auraModelModel">Model</label>
+                <input id="auraModelModel" list="auraModelList" placeholder="选择或输入模型">
+                <datalist id="auraModelList"></datalist>
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <div class="label-line"><label for="auraModelApiKey">API Key</label><span id="auraModelKeyBadge" class="badge muted">未读取</span></div>
+                <div class="secret-control">
+                  <input id="auraModelApiKey" type="password" autocomplete="off" placeholder="Aura LLM API Key">
+                  <button id="showAuraModelKey" class="icon-button" type="button" aria-label="查看 Aura LLM API Key" title="查看/隐藏">查看</button>
+                </div>
+              </div>
+              <div><label for="auraModelBaseUrl">Base URL</label><input id="auraModelBaseUrl" placeholder="按厂商自动填写，也可自定义"></div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="auraModelTimeout">Aura LLM 超时秒</label>
+                <input id="auraModelTimeout" type="number" min="1" step="1">
+              </div>
+              <div>
+                <label for="auraModelMaxTokens">最大输出 Tokens</label>
+                <input id="auraModelMaxTokens" type="number" min="16" max="4096" step="8">
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="auraModelTemperature">Temperature</label>
+                <input id="auraModelTemperature" type="number" min="0" max="2" step="0.1">
+              </div>
+              <div>
+                <label for="auraModelReasoningEffort">Reasoning Effort</label>
+                <select id="auraModelReasoningEffort">
+                  <option value="">不发送</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </div>
+            </div>
+            <p class="hint">语音低延迟建议：max tokens 64-128、temperature 0.3-0.5、reasoning effort 选"不发送"；只有明确需要推理模型时再打开。</p>
+          </div>
+          <div class="actions">
+            <button id="saveAuraRuntimeTop">保存 Aura 运行配置</button>
+            <button id="testAuraModel" class="secondary" type="button">测试 Aura LLM</button>
+            <button id="clearAuraModelKey" class="secondary" type="button">清除 Aura LLM API Key</button>
+          </div>
+          <div id="auraModelTestResult" class="test-result"></div>
+        </section>
+        <section class="panel">
+          <h3>模型历史</h3>
+          <p class="hint">保存 Aura LLM 和旧配置的非密钥历史记录。语音模型配置请在语音服务页管理。</p>
+          <div class="row">
+            <div>
+              <label for="runtimeHistory">选择历史项</label>
+              <select id="runtimeHistory"></select>
+            </div>
+            <div class="history-actions">
+              <button id="applyHistory" class="secondary" type="button">套用到当前表单</button>
+            </div>
+          </div>
+          <div id="historyPreview" class="mini"></div>
+        </section>
+      </section>
+
+      <section id="audio" class="panel-page" data-panel="audio">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Model Service</p>
+            <h2>语音服务</h2>
+            <p class="page-description">维护 ASR/TTS 配置池、音色、API Key 和连通性测试。自托管 VoxCPM、本机 Whisper HTTP 和自定义服务都在这里管理。</p>
+          </div>
+          <span id="audioRuntimeBadge" class="badge muted">未读取</span>
+        </div>
+        <section class="panel">
+          <h3>ASR 语音识别</h3>
+          <p class="hint">支持 API 和本地模式。默认真机链路优先使用 Step Plan ASR SSE + Aura LLM + StepFun TTS，保证回答进入 Aura/Lily 语义层；Key 可以从已保存的 StepFun Plan Key 复用到 ASR。</p>
+          <div class="inline-section">
+            <h4>小智式低延迟链路</h4>
+            <p class="hint" id="xiaozhiLatencyHint">小智式语义流式链路会用实时 ASR 只做听写，回复仍进入 Aura/Lily，再由 StepFun TTS 边合成边播放。Plan Realtime 是实验直连，最快但会绕过 Aura/Lily。</p>
+            <div class="actions compact">
+              <button id="applyStepfunOpenPlatform" class="secondary" type="button">套用 Open Platform 流式</button>
+              <button id="applyXiaozhiAsr" class="secondary" type="button">套用语义流式</button>
+              <button id="applyStepPlanRealtime" class="secondary" type="button">套用实验 Realtime</button>
+              <button id="applyStepPlanAsr" class="secondary" type="button">套用 Plan ASR</button>
+            </div>
+          </div>
+          <div class="inline-section">
+            <h4>已保存 ASR 配置</h4>
+            <div class="row">
+              <div>
+                <label for="asrProfile">配置池</label>
+                <select id="asrProfile"></select>
+              </div>
+              <div>
+                <label for="asrProfileName">保存名称</label>
+                <input id="asrProfileName" placeholder="本机 Whisper HTTP / 自定义 ASR">
+              </div>
+            </div>
+            <div class="actions compact">
+              <button id="applyAsrProfile" class="secondary" type="button">套用 ASR 配置</button>
+              <button id="saveAsrProfile" class="secondary" type="button">保存为 ASR 配置</button>
+              <button id="deleteAsrProfile" class="secondary" type="button">删除 ASR 配置</button>
+            </div>
+            <div id="asrProfilePreview" class="mini"></div>
+          </div>
+          <div class="row">
+            <div class="switchline"><input id="asrEnabled" type="checkbox"><span>启用 ASR</span></div>
+            <div>
+              <label for="asrMode">ASR 模式</label>
+              <select id="asrMode">
+                <option value="api">API / 本机 HTTP</option>
+                <option value="local">本地命令模式</option>
+              </select>
+            </div>
+          </div>
+          <label for="asrPreset">ASR 供应商</label>
+          <select id="asrPreset"></select>
+          <p class="hint" id="asrHint"></p>
+          <div class="row">
+            <div><label for="asrProvider">Provider</label><input id="asrProvider" placeholder="local / openai / custom"></div>
+            <div>
+              <label for="asrModel">ASR Model</label>
+              <input id="asrModel" list="asrModelList" placeholder="选择或输入模型">
+              <datalist id="asrModelList"></datalist>
+            </div>
+          </div>
+          <div class="row">
+            <div><label for="asrBaseUrl">ASR Base URL</label><input id="asrBaseUrl" placeholder="本地模式可留空；API 模式填写 endpoint"></div>
+            <div>
+              <div class="label-line"><label for="asrApiKey">ASR API Key</label><span id="asrKeyBadge" class="badge muted">未读取</span></div>
+              <div class="secret-control">
+                <input id="asrApiKey" type="password" autocomplete="off" placeholder="ASR API Key">
+                <button id="showAsrKey" class="icon-button" type="button" aria-label="查看 ASR API Key" title="查看/隐藏">查看</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div><label for="asrLanguage">识别语言</label><input id="asrLanguage" placeholder="zh"></div>
+            <div><label for="asrTimeout">ASR 超时秒</label><input id="asrTimeout" type="number" min="1" step="1"></div>
+          </div>
+            <div class="actions">
+              <button id="saveAudioRuntimeTop">保存语音模型配置</button>
+              <button id="testAsr" class="secondary" type="button">测试 ASR</button>
+              <button id="copyStepPlanKeyToAsr" class="secondary" type="button">复用已保存 StepFun Key 到 ASR</button>
+              <button id="clearAsrKey" class="secondary" type="button">清除 ASR API Key</button>
+            </div>
+          <div id="asrTestResult" class="test-result"></div>
+        </section>
+
+        <section class="panel">
+          <h3>TTS 语音输出</h3>
+          <p class="hint">支持自行部署的 VoxCPM、主流 TTS 供应商和自定义 HTTP/OpenAI-compatible endpoint；服务地址与音色由用户配置。</p>
+            <div class="inline-section">
+              <h4>已保存 TTS 配置</h4>
+              <div class="row">
+                <div>
+                  <label for="ttsProfile">配置池</label>
+                  <select id="ttsProfile"></select>
+                </div>
+                <div>
+                  <label for="ttsProfileName">保存名称</label>
+                  <input id="ttsProfileName" placeholder="自托管 VoxCPM / MiniMax / 自定义 TTS">
+                </div>
+              </div>
+              <div class="actions compact">
+                <button id="applyTtsProfile" class="secondary" type="button">套用 TTS 配置</button>
+                <button id="saveTtsProfile" class="secondary" type="button">保存为 TTS 配置</button>
+                <button id="deleteTtsProfile" class="secondary" type="button">删除 TTS 配置</button>
+              </div>
+              <div id="ttsProfilePreview" class="mini"></div>
+            </div>
+            <div class="switchline"><input id="ttsEnabled" type="checkbox"><span>启用 TTS</span></div>
+            <label for="ttsPreset">TTS 供应商</label>
+            <select id="ttsPreset"></select>
+            <div class="row">
+              <div><label for="ttsProvider">Provider</label><input id="ttsProvider" placeholder="自动随供应商选择"></div>
+              <div>
+                <label for="ttsModel">TTS Model</label>
+                <input id="ttsModel" list="ttsModelList" placeholder="选择或输入模型">
+                <datalist id="ttsModelList"></datalist>
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="ttsVoice">Voice</label>
+                <input id="ttsVoice" list="ttsVoiceList" placeholder="音色名或 voice id">
+                <datalist id="ttsVoiceList"></datalist>
+              </div>
+              <div>
+                <div class="label-line"><label for="ttsApiKey">TTS API Key</label><span id="ttsKeyBadge" class="badge muted">未读取</span></div>
+                <div class="secret-control">
+                  <input id="ttsApiKey" type="password" autocomplete="off" placeholder="TTS API Key">
+                  <button id="showTtsKey" class="icon-button" type="button" aria-label="查看 TTS API Key" title="查看/隐藏">查看</button>
+                </div>
+              </div>
+            </div>
+            <label for="ttsBaseUrl">TTS Base URL</label>
+            <input id="ttsBaseUrl" placeholder="按供应商自动填写，也可自定义">
+            <div class="row">
+              <div><label for="ttsFormat">音频格式</label><input id="ttsFormat" placeholder="pcm"></div>
+              <div><label for="ttsSampleRate">采样率</label><input id="ttsSampleRate" type="number" min="8000" step="1000"></div>
+            </div>
+            <label for="ttsTimeout">TTS 测试超时秒</label>
+            <input id="ttsTimeout" type="number" min="1" step="1">
+            <p class="hint" id="ttsHint"></p>
+          <div class="actions">
+            <button id="saveAuraRuntime">保存语音模型配置</button>
+            <button id="testTts" class="secondary" type="button">测试 TTS</button>
+            <button id="clearTtsKey" class="secondary" type="button">清除 TTS API Key</button>
+          </div>
+          <div id="auraRuntimeStatus" class="status"></div>
+          <div id="ttsTestResult" class="test-result"></div>
+        </section>
+        <section class="panel">
+          <h3>旧轻量快答兼容</h3>
+          <p class="hint">仅用于读取和清理旧配置。新的 Aura 对话模型请在对话模型页配置。</p>
+          <div class="row">
+            <div><label for="fastReplyProvider">Provider</label><input id="fastReplyProvider" placeholder="旧字段"></div>
+            <div><label for="fastReplyModel">Model</label><input id="fastReplyModel" placeholder="旧字段"></div>
+          </div>
+          <div class="row">
+            <div>
+              <div class="label-line"><label for="fastReplyApiKey">旧快答 API Key</label><span id="fastReplyKeyBadge" class="badge muted">未读取</span></div>
+              <div class="secret-control">
+                <input id="fastReplyApiKey" type="password" autocomplete="off" placeholder="旧字段 API Key">
+                <button id="showFastReplyKey" class="icon-button" type="button" aria-label="查看旧快答 API Key" title="查看/隐藏">查看</button>
+              </div>
+            </div>
+            <div><label for="fastReplyBaseUrl">Base URL</label><input id="fastReplyBaseUrl" placeholder="旧字段"></div>
+          </div>
+          <label for="fastReplyTimeout">旧快答超时秒</label>
+          <input id="fastReplyTimeout" type="number" min="1" step="1">
+          <div class="actions">
+            <button id="clearFastReplyKey" class="secondary" type="button">清除快答 API Key</button>
+            <button id="clearAuraModelKeyBottom" class="secondary" type="button">清除 Aura LLM API Key</button>
+          </div>
+        </section>
+      </section>
+
+      <section id="hermes" class="panel-page" data-panel="hermes">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Model Service</p>
+            <h2>Hermes 引擎</h2>
+            <p class="page-description">配置 Hermes CLI Agent 使用的模型上游。它负责工具调用、文件操作、网页任务和较长的后台执行。</p>
+          </div>
+          <span id="hermesKeyBadge" class="badge muted">未读取</span>
+        </div>
+        <section class="panel">
+          <p class="hint">这里配置 Hermes CLI Agent 的默认上游，只用于工具、文件、网页和长任务执行。普通对话模型在对话模型页配置。</p>
+          <p class="owner-note">写入目标：<span id="hermesPath">Hermes config</span></p>
+          <div class="model-profile-bar">
+            <div>
+              <label for="hermesModelProfile">已保存的 Hermes 模型</label>
+              <select id="hermesModelProfile"></select>
+            </div>
+            <div>
+              <label for="hermesProfileLabel">保存名称</label>
+              <input id="hermesProfileLabel" placeholder="例如：Kimi 工具调用">
+            </div>
+            <div id="hermesQuotaCard" class="quota-card muted"><strong>Hermes 模型额度</strong><span>未读取</span></div>
+          </div>
+          <label for="providerPreset">上游厂商</label>
+          <select id="providerPreset"></select>
+          <p class="hint" id="providerHint"></p>
+          <div class="row">
+            <div>
+              <label for="provider">Provider</label>
+              <input id="provider" placeholder="随厂商选择，也可手动输入">
+            </div>
+            <div>
+              <label for="model">Model</label>
+              <input id="model" list="modelList" placeholder="选择或输入模型">
+              <datalist id="modelList"></datalist>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <div class="label-line"><label for="apiKey">API Key</label><span id="apiKeyBadge" class="badge muted">未读取</span></div>
+              <div class="secret-control">
+                <input id="apiKey" type="password" autocomplete="off" placeholder="上游厂商 API Key">
+                <button id="showHermesKey" class="icon-button" type="button" aria-label="查看 Hermes API Key" title="查看/隐藏">查看</button>
+              </div>
+            </div>
+            <div>
+              <label for="baseUrl">Base URL</label>
+              <input id="baseUrl" placeholder="按厂商自动填写，也可自定义">
+            </div>
+          </div>
+          <details>
+            <summary>高级</summary>
+            <div class="row">
+              <div>
+                <label for="toolsets">Toolsets</label>
+                <input id="toolsets" placeholder="web,terminal,file,code_execution,skills">
+              </div>
+              <div>
+                <label for="timeout">Timeout 秒</label>
+                <input id="timeout" type="number" min="1" step="1">
+              </div>
+            </div>
+          </details>
+          <div class="actions">
+            <button id="saveHermes">保存 Hermes 上游配置</button>
+            <button id="testHermes" class="secondary" type="button">测试 Hermes 模型</button>
+            <button id="clearHermesKey" class="secondary" type="button">清除 Hermes API Key</button>
+          </div>
+          <div id="hermesStatus" class="status"></div>
+          <div id="hermesTestResult" class="test-result"></div>
+        </section>
+      </section>
+
+      <section id="behavior" class="panel-page" data-panel="behavior">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Behavior</p>
+            <h2>行为与快答</h2>
+            <p class="page-description">配置本地快答策略、异步任务确认、实时天气短答和设备侧短答文案。这里不涉及主模型，只决定"她怎么先接住话"。</p>
+          </div>
+        </div>
+        <section class="panel">
+          <h3>快答与异步确认</h3>
+          <p class="hint">快答不是 Aura 的主模型。它只负责本地缓存答案、打招呼/追问/拒绝，以及复杂任务的"先回应再后台执行"。</p>
+          <div class="row">
+            <div class="switchline"><input id="fastReplyEnabled" type="checkbox"><span>启用本地快答</span></div>
+            <div class="switchline"><input id="voiceTurnEnabled" type="checkbox"><span>启用语音回合策略</span></div>
+          </div>
+          <label for="fastReplyMode">快答模式</label>
+          <select id="fastReplyMode">
+            <option value="hermes_main">关闭快答，交给 Aura 对话模型</option>
+            <option value="local_rule">本地规则快答</option>
+            <option value="light_model">旧轻量快答兼容（不作为主模型）</option>
+          </select>
+          <div class="switchline"><input id="ackAndEnqueueEnabled" type="checkbox"><span>复杂/耗时任务先确认，再后台处理并提醒</span></div>
+        </section>
+        <section class="panel">
+          <div class="label-line">
+            <h3>实时天气</h3>
+            <span id="cachedWeatherBadge" class="badge muted">未读取</span>
+          </div>
+          <p class="hint">用于"你那边/你那里天气怎么样"和 ESP32 面板温度，代表 Aura 所在地。用户直接问"现在多少度/现在几点"时优先按用户 IP 或设备上报的位置处理。</p>
+          <div class="row">
+            <div class="switchline"><input id="cachedWeatherEnabled" type="checkbox"><span>启用缓存天气短答</span></div>
+            <div><label for="cachedWeatherTtl">缓存有效期秒</label><input id="cachedWeatherTtl" type="number" min="60" step="60"></div>
+          </div>
+          <div class="row">
+            <div class="switchline"><input id="weatherAutoRefreshEnabled" type="checkbox"><span>自动联网刷新实时天气</span></div>
+            <div>
+              <label for="weatherProvider">天气源</label>
+              <select id="weatherProvider">
+                <option value="open_meteo">Open-Meteo</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div><label for="weatherRefreshInterval">自动刷新间隔秒</label><input id="weatherRefreshInterval" type="number" min="60" step="60"></div>
+            <div><label for="weatherRequestTimeout">天气请求超时秒</label><input id="weatherRequestTimeout" type="number" min="1" step="1"></div>
+          </div>
+          <div class="row">
+            <div><label for="cachedWeatherCity">Aura 所在城市</label><input id="cachedWeatherCity" placeholder="上海"></div>
+            <div><label for="cachedWeatherTemperature">当前温度</label><input id="cachedWeatherTemperature" placeholder="联网刷新后自动填写"></div>
+          </div>
+          <div class="row">
+            <div><label for="cachedWeatherCondition">天气描述</label><input id="cachedWeatherCondition" placeholder="多云 / 小雨 / 晴"></div>
+            <div>
+              <label for="cachedWeatherIcon">设备天气图标</label>
+              <select id="cachedWeatherIcon">
+                <option value="0">晴</option>
+                <option value="1">多云</option>
+                <option value="2">雨</option>
+                <option value="3">雪</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div><label for="cachedWeatherHumidity">湿度</label><input id="cachedWeatherHumidity" placeholder="联网刷新后自动填写"></div>
+            <div><label for="cachedWeatherSource">数据来源</label><input id="cachedWeatherSource" placeholder="open_meteo"></div>
+          </div>
+          <div class="row">
+            <div><label for="weatherLatitude">固定纬度（可选）</label><input id="weatherLatitude" placeholder="例如 31.2304"></div>
+            <div><label for="weatherLongitude">固定经度（可选）</label><input id="weatherLongitude" placeholder="例如 121.4737"></div>
+          </div>
+          <label for="cachedWeatherObservedAt">观测时间</label>
+          <input id="cachedWeatherObservedAt" placeholder="联网刷新后自动填写">
+          <div id="cachedWeatherStatus" class="mini"></div>
+          <div class="actions compact">
+            <button id="refreshCachedWeather" type="button">立即联网刷新天气</button>
+            <button id="touchCachedWeather" class="secondary" type="button">仅刷新缓存时间</button>
+            <button id="clearCachedWeather" class="secondary" type="button">清空天气缓存</button>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>短答文案</h3>
+          <p class="hint">设备侧固定短答，用于唤醒、追问、拒绝和后台确认场景。</p>
+          <label for="greetingReply">唤醒/打招呼</label>
+          <input id="greetingReply" placeholder="嗯，在。">
+          <label for="clarifyReply">没听完整</label>
+          <input id="clarifyReply" placeholder="你刚才那句没说完整，再说一遍？">
+          <label for="refuseReply">边界/拒绝</label>
+          <input id="refuseReply" placeholder="这个我不能帮你做。">
+          <label for="backgroundAckReply">后台处理确认</label>
+          <input id="backgroundAckReply" placeholder="好，我先处理，结果会留在后台。">
+        </section>
+      </section>
+
+      <section id="soulPanel" class="panel-page" data-panel="soul">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">Persona</p>
+            <h2>人格设定</h2>
+            <p class="page-description">控制 Soul、关系状态、位置指代、最近动态和主动行为是否进入 Aura 上下文。</p>
+          </div>
+          <span id="soulBadge" class="badge muted">未读取</span>
+        </div>
+        <section class="panel">
+          <h3>人格网关设置</h3>
+          <div class="switchline"><input id="personaEnabled" type="checkbox"><span>启用人格网关</span></div>
+          <div class="row">
+            <div><label for="auraCity">Lily 所在城市</label><input id="auraCity" placeholder="上海"></div>
+            <div>
+              <label for="userLocationMode">用户定位方式</label>
+              <select id="userLocationMode">
+                <option value="device_ip">设备公网 IP 自动定位</option>
+                <option value="manual">手动固定位置</option>
+                <option value="disabled">不自动定位</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div><label for="userCity">用户所在城市</label><input id="userCity" placeholder="例如：上海"></div>
+            <div><label for="userTimezone">用户时区</label><input id="userTimezone" placeholder="Asia/Shanghai"></div>
+          </div>
+          <div class="row">
+            <div><label for="userLatitude">用户纬度</label><input id="userLatitude" placeholder="31.2304"></div>
+            <div><label for="userLongitude">用户经度</label><input id="userLongitude" placeholder="121.4737"></div>
+          </div>
+          <p class="hint">"现在几点/现在多少度"使用用户位置；"你那边"使用 Lily 所在城市。设备公网 IP 指 ESP32 自己上报的公网出口，不使用 Docker 的公网出口。</p>
+          <section class="inline-section">
+            <div class="label-line">
+              <h4>用户位置诊断</h4>
+              <span id="locationBadge" class="badge muted">未读取</span>
+            </div>
+            <div class="diagnostic-grid">
+              <div><b>当前来源</b><span id="locationModeText">未读取</span></div>
+              <div><b>有效位置</b><span id="locationEffective">未读取</span></div>
+              <div><b>ESP32 公网 IP</b><span id="locationDeviceIp">未读取</span></div>
+              <div><b>连接来源 IP</b><span id="locationClientIp">未读取</span></div>
+            </div>
+            <p id="locationAdvice" class="hint">读取后台摘要后显示定位状态。</p>
+          </section>
+          <div class="triple">
+            <div class="switchline"><input id="includeState" type="checkbox"><span>状态</span></div>
+            <div class="switchline"><input id="worldModelEnabled" type="checkbox"><span>世界模型</span></div>
+            <div class="switchline"><input id="includeMoment" type="checkbox"><span>最近动态</span></div>
+          </div>
+          <div class="triple">
+            <div class="switchline"><input id="includeMessages" type="checkbox"><span>最近对话</span></div>
+            <div class="switchline"><input id="includePlan" type="checkbox"><span>今日生活线</span></div>
+            <div class="switchline"><input id="proactiveEnabled" type="checkbox"><span>主动消息</span></div>
+          </div>
+          <div class="triple">
+            <div class="switchline"><input id="spendEnabled" type="checkbox"><span>消费事件</span></div>
+            <div class="switchline"><input id="debugEnabled" type="checkbox"><span>Debug 事件</span></div>
+          </div>
+          <div class="actions"><button id="savePersonaConfig">保存人格配置</button></div>
+          <div id="personaConfigStatus" class="status">现有用户的配置将从 runtime 和 companion.db 自动读取。</div>
+        </section>
+        <section class="panel">
+          <h3>Soul 文本内容</h3>
+          <div class="mini" id="soulPath"></div>
+          <label for="soul">Soul 文本</label>
+          <textarea id="soul" spellcheck="false"></textarea>
+          <div class="actions"><button id="saveSoul">保存 Soul</button></div>
+          <div id="soulStatus" class="status"></div>
+        </section>
+      </section>
+
+      <section id="state" class="panel-page" data-panel="state">
+        <div class="page-title">
+          <div>
+            <p class="eyebrow">State &amp; World</p>
+            <h2>状态与世界</h2>
+            <p class="page-description">调试和编辑 mood、trust 等人格状态字段与生活背景，并查看 Lily 的简化生活环境、今日计划和当前位置。世界部分只服务 ESP 对话和显示。</p>
+          </div>
+          <div class="page-title-badges">
+            <span id="stateBadge" class="badge muted">未读取</span>
+            <span id="worldBadge" class="badge muted">未读取</span>
+          </div>
+        </div>
+        <div class="state-grid">
+          <section class="panel">
+            <h3>关系状态</h3>
+            <div class="triple">
+              <div><label for="mood">Mood</label><input id="mood" type="number"></div>
+              <div><label for="energy">Energy</label><input id="energy" type="number"></div>
+              <div><label for="satiety">Satiety</label><input id="satiety" type="number"></div>
+            </div>
+            <div class="triple">
+              <div><label for="trust">Trust</label><input id="trust" type="number"></div>
+              <div><label for="stress">Stress</label><input id="stress" type="number"></div>
+              <div><label for="affinityXp">Affinity XP</label><input id="affinityXp" type="number"></div>
+            </div>
+            <div class="triple">
+              <div><label for="beans">Beans</label><input id="beans" type="number"></div>
+              <div><label for="socialNeed">Social Need</label><input id="socialNeed" type="number"></div>
+              <div><label for="curiosity">Curiosity</label><input id="curiosity" type="number"></div>
+            </div>
+            <label for="privacySensitivity">Privacy Sensitivity</label>
+            <input id="privacySensitivity" type="number">
+            <div class="switchline"><input id="strained" type="checkbox"><span>关系紧张/边界感增强</span></div>
+            <div class="actions"><button id="saveState">保存状态</button></div>
+            <div id="stateStatus" class="status"></div>
+          </section>
+          <section class="panel">
+            <h3>生活背景</h3>
+            <label for="activity">当前活动</label>
+            <input id="activity" placeholder="在书房整理东西">
+            <div class="row">
+              <div><label for="location">当前位置 key</label><input id="location" placeholder="study"></div>
+              <div><label for="locationLabel">位置显示</label><input id="locationLabel" placeholder="书房"></div>
+            </div>
+            <div class="row">
+              <div><label for="scene">Scene</label><input id="scene" placeholder="living_room"></div>
+              <div><label for="outfit">Outfit</label><input id="outfit" placeholder="default"></div>
+            </div>
+            <label for="stateSummary">状态摘要</label>
+            <pre id="stateSummary">{}</pre>
+          </section>
+        </div>
+        <div class="state-grid">
+          <section class="panel">
+            <h3>世界当前状态</h3>
+            <div id="worldCurrent" class="world-current">未读取</div>
+            <div id="worldPolicy" class="mini"></div>
+            <div class="actions">
+              <button id="refreshWorld" type="button">刷新世界状态</button>
+            </div>
+            <div id="worldStatus" class="status"></div>
+          </section>
+          <section class="panel">
+            <h3>今日计划</h3>
+            <div id="worldPlan" class="world-plan-list"></div>
+          </section>
+        </div>
+        <section class="panel">
+          <h3>调试快照</h3>
+          <pre id="worldDebug">{}</pre>
+        </section>
+      </section>
+
+    </main>
+  </div>
+  <script src="/admin/app.js?v=20260709-ui-saas2"></script>
+</body>
+</html>

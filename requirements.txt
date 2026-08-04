@@ -1,0 +1,9 @@
+websockets>=12,<17
+pypdf>=4,<6
+python-docx>=1.1,<2
+# Kimi Coding Plan（kimi-for-coding）走 Anthropic 协议，hermes 需要这个 SDK。
+anthropic>=0.39
+# hermes web 工具集的免费搜索后端（DuckDuckGo）。不装这个包（或没配
+# firecrawl/tavily 等付费后端的 key）时 web_search 工具不会注册，
+# agent 会说自己"没有联网工具"。
+ddgs>=9
