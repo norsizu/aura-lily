@@ -128,7 +128,7 @@ def resolve_query_context(
     if "工资" in clean or "工时" in clean:
         has_weather = any(token in clean for token in ("天气", "下雨", "气温", "温度", "多少度", "几度", "冷不冷", "热不热", "带伞", "穿什么"))
     has_time = any(token in clean for token in TIME_TOKENS)
-    second_person = any(token in clean for token in ("你", "aura", "豆豆"))
+    second_person = any(token in clean for token in ("你", "aura", "莉莉"))
     if has_time and has_weather:
         local_allowed = True
         explicit = extract_explicit_city(normalized_for_intent)

@@ -36,6 +36,7 @@ ALLOWLIST = [
     Entry(".gitignore"),
     Entry("Dockerfile"),
     Entry("README.md"),
+    Entry("docs/media/", required=False),
     Entry("AURA_LILY_STATUS_AND_DEPLOYMENT.md"),
     Entry("LICENSE", required=False),
     Entry("docker-compose.yml"),

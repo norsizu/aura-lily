@@ -6,6 +6,13 @@ Aura Lily 是一套面向 Waveshare ESP32-S3-RLCD-4.2 的开源语音陪伴设�
 
 > 本公开仓库不包含 RAG/知识库路由、语义长期记忆模块、私有 Soul/人格内容、个人身份、API Key、私有域名/IP/SSID 或生产服务器配置。Git 仓库中也不会保留可回退恢复这些内容的旧历史。
 
+## 宣传视频 / Demo
+
+- [观看 Aura Lily YouTube Shorts](https://youtube.com/shorts/B0PyZoMU2sw)
+- [下载本地 MP4 演示](docs/media/AuraHero-v13-full-english-answer.mp4)
+
+YouTube 链接适合在线观看；仓库中的 MP4 作为可下载副本。GitHub 不是视频托管平台，仓库文件只要低于单文件 100 MB 限制即可直接保存。
+
 ## 中文
 
 ### 当前功能

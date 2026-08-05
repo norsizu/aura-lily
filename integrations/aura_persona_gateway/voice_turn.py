@@ -818,7 +818,7 @@ def _weather_cache_matches_query(snapshot: dict[str, Any], context: dict[str, An
     if city and target:
         return city == target
     if city and not target:
-        return False
+        return source == "aura_home"
     if not city and subject == "aura":
         return source in {"aura_home", "explicit_text", ""}
     return False
