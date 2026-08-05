@@ -15,10 +15,34 @@ Aura Lily 面向 Waveshare ESP32-S3-RLCD-4.2。它不是把聊天窗口搬到一
 </p>
 
 <p align="center">
-  点击封面在 GitHub 中打开 58 秒演示视频，或 <a href="docs/media/AuraHero-v13-full-english-answer.mp4">下载 MP4</a>。也可观看 <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Shorts</a>。
+  <a href="https://youtube.com/shorts/B0PyZoMU2sw">观看 YouTube Shorts</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">下载 MP4</a>
 </p>
 
-GitHub README 不稳定支持原生视频播放器，因此这里采用与许多硬件开源项目相同的“封面图链接视频”方式：README 可正常渲染，视频仍以仓库文件保存。
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">打开演示视频</a>
+</video>
+
+## 外观与硬件
+
+Aura Lily 使用 Waveshare [ESP32-S3-RLCD-4.2 开发板](https://docs.waveshare.net/ESP32-S3-RLCD-4.2/)，外壳由 [黄木匠（Siagfried）](https://makerworld.com.cn/zh/@Siagfried) 制作，参考模型见 [微雪 4.2 寸全反射屏开发板外壳](https://makerworld.com.cn/zh/models/2726139-wei-xue-4-2cun-quan-fan-she-ping-kai-fa-ban-wai-ke#profileId-3216633)。
+
+<table>
+  <tr>
+    <td><img src="docs/media/hardware/waveshare-esp32-s3-rlcd-4.2.webp" width="220" alt="Waveshare ESP32-S3-RLCD-4.2"></td>
+    <td><img src="docs/media/posters/aura-braun.jpg" width="155" alt="Aura Lily Braun palette"></td>
+    <td><img src="docs/media/posters/aura-pixel-green.jpg" width="155" alt="Aura Lily natural green pixel palette"></td>
+    <td><img src="docs/media/posters/aura-famicom.jpg" width="155" alt="Aura Lily Nintendo palette"></td>
+    <td><img src="docs/media/posters/aura-macintosh.jpg" width="155" alt="Aura Lily Macintosh palette"></td>
+  </tr>
+  <tr>
+    <td align="center">原始开发板</td>
+    <td align="center">Braun</td>
+    <td align="center">自然绿像素</td>
+    <td align="center">红白机</td>
+    <td align="center">Macintosh</td>
+  </tr>
+</table>
 
 ## 它和普通语音助手有什么不同
 
@@ -29,14 +53,14 @@ GitHub README 不稳定支持原生视频播放器，因此这里采用与许多
 
 ## 已实现的能力
 
-| 模块 | 公开版实际包含 |
+| 模块 | 实际包含 |
 | --- | --- |
 | 语音回合 | 设备录音、Opus 上行、ASR、流式文本回复和 TTS 音频回传；字幕按实际音频播放推进。 |
 | 三语体验 | 中文、English、日本語界面与语音路由；额度提示等本地文本也有对应翻译。 |
 | 日常世界 | 可选的状态、日程和世界层；日程推进会结算进食、休息、外出、购物等状态效果。 |
 | 本地连接 | 两个已保存 Wi-Fi 槽位，菜单显示真实 SSID，可在家中网络和手机热点之间切换。 |
 | OTA | 双应用分区、应用与资源 OTA、SHA-256 校验与启动回滚。旧单分区设备首次迁移需要一次完整有线刷写。 |
-| 自托管配置 | 本地管理页面可配置 Hermes、对话模型、ASR、TTS、对话额度和可选 Soul。公开构建不写入任何默认服务地址。 |
+| 自托管配置 | 本地管理页面可配置 Hermes、对话模型、ASR、TTS、对话额度和可选 Soul。固件构建不写入任何默认服务地址。 |
 
 ## 架构
 
@@ -97,7 +121,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 ### 4. 使用双 Wi-Fi 与 OTA
 
-配网成功的网络会保留两个凭据槽位，菜单显示对应 SSID。公开版不提供默认 OTA 服务器；请在 `menuconfig > Aura Lily` 中配置自己的 HTTPS 清单 URL，再使用 `tools/make_ota_release.py` 生成可发布的固件与资源清单。先上传全部工件，最后才发布 `manifest.json`。
+配网成功的网络会保留两个凭据槽位，菜单显示对应 SSID。默认不提供 OTA 服务器；请在 `menuconfig > Aura Lily` 中配置自己的 HTTPS 清单 URL，再使用 `tools/make_ota_release.py` 生成固件与资源清单。先上传全部工件，最后再发布 `manifest.json`。
 
 详细的 Hermes 桥接、HTTP 合约和冒烟测试见 [Hermes bridge guide](integrations/hermes_lily_cli/README.md)。
 
@@ -111,15 +135,9 @@ tests/                              Focused gateway, world, Wi-Fi, OTA and quota
 tools/                              Asset, voice, diagnostics and OTA release tools
 ```
 
-## 公开范围与隐私边界
+## 配置安全
 
-这是独立整理过 Git 历史的**无 RAG 公开版**。它不包含，也不能通过切换公开仓库旧提交恢复：
-
-- RAG、知识库查询路由、向量数据库连接或语义长期记忆模块；
-- 项目维护者的 Soul/人格、聊天数据库、运行状态、身份信息或 API Key；
-- 私有域名、IP、SSID、OTA 地址、生产服务配置或部署文件。
-
-本地状态、近期对话上下文和日程是设备运行数据，不是知识库或语义长期记忆。请将 `.env`、`.docker/`、设备备份和构建产物保持在你自己的私有环境中。
+仓库不提供模型密钥、默认服务地址或个人角色内容。请将 `.env`、`.docker/`、设备备份和构建产物留在自己的私有环境中；需要知识库时，可在自有服务端按需扩展。
 
 ## 验证
 

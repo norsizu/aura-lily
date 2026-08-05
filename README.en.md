@@ -15,10 +15,34 @@ Aura Lily is built for the Waveshare ESP32-S3-RLCD-4.2. It is not a chat window 
 </p>
 
 <p align="center">
-  Open the 58-second demo from the cover, or <a href="docs/media/AuraHero-v13-full-english-answer.mp4">download the MP4</a>. A <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Short</a> is available as well.
+  <a href="https://youtube.com/shorts/B0PyZoMU2sw">Watch the YouTube Short</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Download the MP4</a>
 </p>
 
-GitHub README rendering does not reliably provide an inline video player, so the demo uses the same robust pattern used by many open-hardware projects: a clickable poster linked to a repository-hosted video.
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Open the demo video</a>
+</video>
+
+## Hardware and credits
+
+Aura Lily is built around the Waveshare [ESP32-S3-RLCD-4.2 board](https://docs.waveshare.net/ESP32-S3-RLCD-4.2/). The enclosure was made by [Siagfried (黄木匠)](https://makerworld.com.cn/zh/@Siagfried); see the [Waveshare 4.2-inch reflective-display enclosure](https://makerworld.com.cn/zh/models/2726139-wei-xue-4-2cun-quan-fan-she-ping-kai-fa-ban-wai-ke#profileId-3216633).
+
+<table>
+  <tr>
+    <td><img src="docs/media/hardware/waveshare-esp32-s3-rlcd-4.2.webp" width="220" alt="Waveshare ESP32-S3-RLCD-4.2"></td>
+    <td><img src="docs/media/posters/aura-braun.jpg" width="155" alt="Aura Lily Braun palette"></td>
+    <td><img src="docs/media/posters/aura-pixel-green.jpg" width="155" alt="Aura Lily natural green pixel palette"></td>
+    <td><img src="docs/media/posters/aura-famicom.jpg" width="155" alt="Aura Lily Nintendo palette"></td>
+    <td><img src="docs/media/posters/aura-macintosh.jpg" width="155" alt="Aura Lily Macintosh palette"></td>
+  </tr>
+  <tr>
+    <td align="center">Original board</td>
+    <td align="center">Braun</td>
+    <td align="center">Natural green pixel</td>
+    <td align="center">Famicom</td>
+    <td align="center">Macintosh</td>
+  </tr>
+</table>
 
 ## What makes it different
 
@@ -29,14 +53,14 @@ GitHub README rendering does not reliably provide an inline video player, so the
 
 ## Included capabilities
 
-| Area | What the public edition includes |
+| Area | Included |
 | --- | --- |
 | Voice turns | Device recording, Opus uplink, ASR, streamed text replies, and TTS audio return. Captions progress with actual audio playback. |
 | Three languages | Chinese, English, and Japanese UI and speech routing, including localized quota prompts. |
 | Everyday world | Optional state, schedule, and world layer. Scheduled meals, rest, outings, and purchases settle real state effects. |
 | Local networking | Two saved Wi-Fi credential slots with real SSID labels and manual switching. |
 | OTA | Dual application partitions, application and asset OTA, SHA-256 verification, and boot rollback. An old single-partition device needs one complete wired flash before its first OTA migration. |
-| Self-hosting | A local admin UI for Hermes, the dialogue model, ASR, TTS, dialogue quota, and an optional Soul. Public builds have no baked-in server endpoint. |
+| Self-hosting | A local admin UI for Hermes, the dialogue model, ASR, TTS, dialogue quota, and an optional Soul. Firmware builds have no baked-in server endpoint. |
 
 ## Architecture
 
@@ -97,7 +121,7 @@ Set your WebSocket and OTA manifest URLs in `menuconfig > Aura Lily`, or save th
 
 ### 4. Wi-Fi and OTA
 
-Successful provisioning retains two Wi-Fi credentials and shows their SSIDs in the device menu. The public build has no default OTA server. Configure your own HTTPS manifest URLs in `menuconfig > Aura Lily`, then use `tools/make_ota_release.py` to create firmware and asset manifests. Upload all artifacts before publishing `manifest.json`.
+Successful provisioning retains two Wi-Fi credentials and shows their SSIDs in the device menu. There is no default OTA server. Configure your own HTTPS manifest URL in `menuconfig > Aura Lily`, then use `tools/make_ota_release.py` to create firmware and asset manifests. Upload all artifacts before publishing `manifest.json`.
 
 For the detailed Hermes bridge contract and smoke test, read the [Hermes bridge guide](integrations/hermes_lily_cli/README.md).
 
@@ -111,15 +135,9 @@ tests/                              Focused gateway, world, Wi-Fi, OTA and quota
 tools/                              Asset, voice, diagnostics and OTA release tools
 ```
 
-## Public scope and privacy
+## Configuration safety
 
-This is a separately curated **public no-RAG release**. It does not include, and cannot be restored by checking out older public commits:
-
-- RAG, knowledge-base routing, vector-database connections, or semantic long-term memory;
-- the maintainer's Soul/persona, chat databases, runtime state, identity data, or API keys;
-- private domains, IP addresses, SSIDs, OTA URLs, production-service settings, or deployment files.
-
-Local state, recent turn context, and schedules are operational device data, not a knowledge base or semantic long-term memory. Keep `.env`, `.docker/`, device backups, and build artifacts private in your own environment.
+The repository does not provide model keys, a default service endpoint, or personal character data. Keep `.env`, `.docker/`, device backups, and build artifacts in your own private environment. Add a knowledge base on your own server if you need one.
 
 ## Verify
 

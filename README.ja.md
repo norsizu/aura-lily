@@ -15,10 +15,34 @@ Aura Lily は Waveshare ESP32-S3-RLCD-4.2 向けに作られています。小�
 </p>
 
 <p align="center">
-  表紙をクリックすると GitHub 上で 58 秒のデモを開けます。<a href="docs/media/AuraHero-v13-full-english-answer.mp4">MP4 のダウンロード</a>、または <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Shorts</a> も利用できます。
+  <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Shorts で見る</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">MP4 をダウンロード</a>
 </p>
 
-GitHub の README ではネイティブ動画プレーヤーが安定しないため、多くのハードウェア系オープンソースと同じく、動画にリンクしたクリック可能な表紙画像を使っています。動画本体はリポジトリ内に保存されています。
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">デモ動画を開く</a>
+</video>
+
+## ハードウェアとクレジット
+
+Aura Lily は Waveshare の [ESP32-S3-RLCD-4.2 開発ボード](https://docs.waveshare.net/ESP32-S3-RLCD-4.2/)をベースにしています。筐体は [黄木匠（Siagfried）](https://makerworld.com.cn/zh/@Siagfried) が制作しました。参考モデルは [4.2 インチ反射型ディスプレイ用筐体](https://makerworld.com.cn/zh/models/2726139-wei-xue-4-2cun-quan-fan-she-ping-kai-fa-ban-wai-ke#profileId-3216633)です。
+
+<table>
+  <tr>
+    <td><img src="docs/media/hardware/waveshare-esp32-s3-rlcd-4.2.webp" width="220" alt="Waveshare ESP32-S3-RLCD-4.2"></td>
+    <td><img src="docs/media/posters/aura-braun.jpg" width="155" alt="Aura Lily Braun palette"></td>
+    <td><img src="docs/media/posters/aura-pixel-green.jpg" width="155" alt="Aura Lily natural green pixel palette"></td>
+    <td><img src="docs/media/posters/aura-famicom.jpg" width="155" alt="Aura Lily Nintendo palette"></td>
+    <td><img src="docs/media/posters/aura-macintosh.jpg" width="155" alt="Aura Lily Macintosh palette"></td>
+  </tr>
+  <tr>
+    <td align="center">元の開発ボード</td>
+    <td align="center">Braun</td>
+    <td align="center">ナチュラルグリーン</td>
+    <td align="center">ファミコン</td>
+    <td align="center">Macintosh</td>
+  </tr>
+</table>
 
 ## ふつうの音声アシスタントとの違い
 
@@ -27,16 +51,16 @@ GitHub の README ではネイティブ動画プレーヤーが安定しない�
 - **言語は一貫した経路です。** 中国語、英語、日本語で、UI、音声認識結果、返答、TTS 出力が現在の会話言語に合わせて動作します。
 - **端末そのものが体験です。** 400 x 300 の反射型 1-bit 画面に、キャラクター、服装、シーン、字幕、状態、情報ボードを表示します。短いローカル案内音声のために、毎回 TTS を呼ぶ必要はありません。
 
-## 公開版に含まれる機能
+## 含まれる機能
 
-| 領域 | 含まれる内容 |
+| 領域 | 内容 |
 | --- | --- |
 | 音声ターン | 端末録音、Opus アップリンク、ASR、ストリーミング応答、TTS 音声の返送。字幕は実際の音声再生に合わせて進みます。 |
 | 3 言語 | 中国語、英語、日本語の UI と音声経路。利用枠の案内もローカライズされます。 |
 | 日常世界 | 任意で有効にできる状態、予定、世界レイヤー。食事、休息、外出、買い物の予定は実際の状態変化として精算されます。 |
 | ローカル接続 | 実際の SSID 名を表示する 2 つの保存済み Wi-Fi スロットと手動切り替え。 |
 | OTA | デュアルアプリ領域、アプリ/アセット OTA、SHA-256 検証、起動ロールバック。古い単一パーティション端末は最初の OTA 移行前に一度だけ有線で完全書き込みが必要です。 |
-| セルフホスト | Hermes、会話モデル、ASR、TTS、会話枠、任意の Soul を設定するローカル管理 UI。公開ビルドには既定のサーバー接続先を含みません。 |
+| セルフホスト | Hermes、会話モデル、ASR、TTS、会話枠、任意の Soul を設定するローカル管理 UI。ファームウェアには既定のサーバー接続先を含みません。 |
 
 ## 構成
 
@@ -97,7 +121,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 ### 4. Wi-Fi と OTA
 
-接続に成功した Wi-Fi は 2 件まで保存され、端末メニューで SSID が表示されます。公開版には既定の OTA サーバーはありません。`menuconfig > Aura Lily` に自分の HTTPS マニフェスト URL を設定し、`tools/make_ota_release.py` でファームウェアとアセットのマニフェストを作成してください。`manifest.json` を公開する前に、すべての成果物を先にアップロードします。
+接続に成功した Wi-Fi は 2 件まで保存され、端末メニューで SSID が表示されます。既定の OTA サーバーはありません。`menuconfig > Aura Lily` に自分の HTTPS マニフェスト URL を設定し、`tools/make_ota_release.py` でファームウェアとアセットのマニフェストを作成してください。`manifest.json` を公開する前に、すべての成果物を先にアップロードします。
 
 Hermes ブリッジの HTTP 契約とスモークテストの詳細は [Hermes bridge guide](integrations/hermes_lily_cli/README.md) を参照してください。
 
@@ -111,15 +135,9 @@ tests/                              Focused gateway, world, Wi-Fi, OTA and quota
 tools/                              Asset, voice, diagnostics and OTA release tools
 ```
 
-## 公開範囲とプライバシー
+## 設定の安全性
 
-これは Git 履歴を独立して整理した**公開用・非 RAG リリース**です。以下は含まれず、公開リポジトリの古いコミットに切り替えても復元できません。
-
-- RAG、ナレッジベースのルーティング、ベクターデータベース接続、意味ベースの長期記憶。
-- メンテナーの Soul/人格、会話データベース、実行時状態、個人情報、API Key。
-- 非公開ドメイン、IP、SSID、OTA URL、本番サービス設定、デプロイ用ファイル。
-
-ローカル状態、最近の会話コンテキスト、予定は端末を動かすためのデータであり、ナレッジベースや意味ベースの長期記憶ではありません。`.env`、`.docker/`、端末バックアップ、ビルド成果物は自分のプライベート環境で管理してください。
+このリポジトリにはモデルのキー、既定のサービス接続先、個人のキャラクター設定は含まれていません。`.env`、`.docker/`、端末バックアップ、ビルド成果物は自分のプライベート環境で管理してください。ナレッジベースが必要な場合は、自分のサーバーで追加できます。
 
 ## 検証
 
