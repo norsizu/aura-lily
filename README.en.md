@@ -6,6 +6,10 @@
 
 Aura Lily is built for the Waveshare ESP32-S3-RLCD-4.2. It is not a chat window squeezed onto a small display. It joins voice turns, character state, scenes, and a daily rhythm in a self-hosted ESP32-S3 device. The device handles recording, sound, display, and local interaction; your own service handles the voice pipeline, model calls, and the optional world state.
 
+## Project scope
+
+Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use and ESP32-S3 hardware. It keeps the core voice experience, character state, scenes, schedules, and configurable gateway, while leaving out private production services and some advanced capabilities from the complete Aura product. The complete Aura product is not planned as an open-source release.
+
 ## Demo
 
 <p align="center">
