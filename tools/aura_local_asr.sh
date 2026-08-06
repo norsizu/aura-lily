@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_MODEL_PATH="$ROOT_DIR/.docker/aura-persona/asr-models/ggml-small.bin"
+PERSONA_HOME="${AURA_PERSONA_HOME:-$ROOT_DIR/.aura/persona}"
+DEFAULT_MODEL_PATH="$PERSONA_HOME/asr-models/ggml-small.bin"
 if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
-  DEFAULT_MODEL_PATH="$ROOT_DIR/.docker/aura-persona/asr-models/ggml-base.bin"
+  DEFAULT_MODEL_PATH="$PERSONA_HOME/asr-models/ggml-base.bin"
 fi
 SOURCE_MODEL_PATH="${AURA_WHISPER_MODEL:-$DEFAULT_MODEL_PATH}"
 HOST="${AURA_LOCAL_ASR_HOST:-127.0.0.1}"
@@ -104,7 +105,7 @@ prepare_runtime_files() {
   cp "$ROOT_DIR/tools/local_whisper_asr_server.py" "$SERVER"
   if [[ ! -f "$SOURCE_MODEL_PATH" ]]; then
     echo "missing ASR model: $SOURCE_MODEL_PATH" >&2
-    echo "download one first, for example: .docker/aura-persona/asr-models/ggml-base.bin" >&2
+    echo "download one first, for example: .aura/persona/asr-models/ggml-base.bin" >&2
     return 1
   fi
   if [[ ! -f "$MODEL_PATH" ]] || ! cmp -s "$SOURCE_MODEL_PATH" "$MODEL_PATH"; then
@@ -168,7 +169,7 @@ start_server() {
   fi
   if [[ ! -f "$SOURCE_MODEL_PATH" ]]; then
     echo "missing ASR model: $SOURCE_MODEL_PATH" >&2
-    echo "download one first, for example: .docker/aura-persona/asr-models/ggml-base.bin" >&2
+    echo "download one first, for example: .aura/persona/asr-models/ggml-base.bin" >&2
     return 1
   fi
   if launchd_available; then

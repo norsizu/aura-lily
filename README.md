@@ -72,17 +72,18 @@ Aura Lily gateway
             +-- optional Aura state and daily-world layer
 ```
 
-服务端只需运行在你可控制的电脑、NAS 或服务器上。模型和语音服务由你自行选择和配置；设备不会把 `127.0.0.1` 当作服务端地址。
+服务端以原生 Python 进程运行在你可控制的电脑、NAS 或服务器上，不依赖 Docker。模型和语音服务由你自行选择和配置；设备不会把 `127.0.0.1` 当作服务端地址。
 
 ## 快速开始
 
 ### 1. 启动本地服务
 
-要求：Python 3.11+、Docker Compose，以及已配置好的 `hermes` CLI 或 OpenAI-compatible 模型接口。固件编译需要 ESP-IDF 5.x。
+要求：Python 3.11+、一个可用的 `hermes` CLI，以及 OpenAI-compatible 模型接口或其他 Hermes provider。固件编译需要 ESP-IDF 5.x。
 
 ```bash
-cp .env.example .env
-docker compose up --build
+./tools/install_native.sh
+# 编辑 .env，填入 Hermes/provider、ASR 和 TTS 配置
+.venv/bin/python tools/run_native.py
 ```
 
 另开一个终端确认服务：
@@ -101,7 +102,7 @@ curl -s http://127.0.0.1:8765/health
 AURA_PERSONA_ENABLED=1
 ```
 
-Soul 默认为空；你可以在本地管理页面填写自己的内容，或创建 `.docker/aura-persona/persona/soul.md`。状态与日程存放在被 Git 忽略的本地运行目录中。
+Soul 默认为空；你可以在本地管理页面填写自己的内容，或创建 `.aura/persona/persona/soul.md`。状态与日程存放在被 Git 忽略的 `.aura/` 本地运行目录中。
 
 ### 3. 编译并刷写设备
 
@@ -149,14 +150,14 @@ tools/                              Asset, voice, diagnostics and OTA release to
 
 ## 配置安全
 
-仓库不提供模型密钥、默认服务地址或个人角色内容。请将 `.env`、`.docker/`、设备备份和构建产物留在自己的私有环境中。
+仓库不提供模型密钥、默认服务地址或个人角色内容。请将 `.env`、`.aura/`、设备备份和构建产物留在自己的私有环境中。
 
 ## 验证
 
 服务端测试：
 
 ```bash
-python3 -m pytest -q
+python3 -m pytest -q tests
 ```
 
 发布前还应执行一次 `idf.py build`，并确认应用镜像能放入 `0x280000` 的 OTA 分区。

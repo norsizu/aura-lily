@@ -3,7 +3,6 @@
 <plist version="1.0">
 <dict>
     <!-- Aura Lily：在局域网广播 _aura-lily._tcp 服务，供 ESP32 固件 mDNS 自动发现网关。
-         Docker Desktop for Mac 的容器无法向局域网发送 mDNS 组播，所以由宿主机代播。
          安装：bash tools/macos/install_mdns_service.sh -->
     <key>Label</key>
     <string>com.aura-lily.mdns</string>

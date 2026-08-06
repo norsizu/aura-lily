@@ -861,7 +861,7 @@ function fillLocation(location = {}) {
   const adviceMap = {
     manual: "当前使用后台手动用户位置；“现在几点/现在多少度”会按这个位置回答。",
     manual_missing: "当前选择手动定位，但还没填写城市、时区或经纬度。请在上方补齐后保存。",
-    auto_ready: "ESP32 已上报公网 IP，后台可以据此推断用户位置；Docker/private IP 不参与定位。",
+    auto_ready: "ESP32 已上报公网 IP，后台可以据此推断用户位置；客户端私有 IP 不参与定位。",
     auto_waiting: "还没收到 ESP32 公网 IP。需要刷入开启公网 IP 查询的固件并让设备重新连接，或改用手动位置。",
     disabled: "用户自动定位已关闭；涉及用户所在地的问题可能无法回答实时位置。",
   };

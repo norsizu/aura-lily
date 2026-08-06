@@ -72,17 +72,18 @@ Aura Lily gateway
             +-- optional Aura state and daily-world layer
 ```
 
-サービスは自分で管理できる PC、NAS、またはサーバーで動かします。モデルと音声プロバイダーは自分で選択・設定します。端末には LAN、Tailscale、または公開アドレスを設定し、`127.0.0.1` は使いません。
+Aura Lily は Docker を使わず、自分で管理できる PC、NAS、またはサーバー上のネイティブ Python プロセスとして動きます。モデルと音声プロバイダーは自分で選択・設定します。端末には LAN、Tailscale、または公開アドレスを設定し、`127.0.0.1` は使いません。
 
 ## クイックスタート
 
 ### 1. ローカルサービスを起動する
 
-必要なものは Python 3.11+、Docker Compose、設定済みの `hermes` CLI または OpenAI-compatible モデル API です。ファームウェアのビルドには ESP-IDF 5.x が必要です。
+必要なものは Python 3.11+、動作する `hermes` CLI、OpenAI-compatible モデル API または別の Hermes provider です。ファームウェアのビルドには ESP-IDF 5.x が必要です。
 
 ```bash
-cp .env.example .env
-docker compose up --build
+./tools/install_native.sh
+# .env を編集して Hermes/provider、ASR、TTS を設定します。
+.venv/bin/python tools/run_native.py
 ```
 
 別のターミナルで確認します。
@@ -101,7 +102,7 @@ HTTP/管理画面の既定ポートは `8765`、ESP32 WebSocket ゲートウェ�
 AURA_PERSONA_ENABLED=1
 ```
 
-Soul は空の状態で始まります。ローカル管理 UI から自分で入力するか、`.docker/aura-persona/persona/soul.md` を作成してください。状態と予定は Git で無視されるローカルの実行データに保存されます。
+Soul は空の状態で始まります。ローカル管理 UI から自分で入力するか、`.aura/persona/persona/soul.md` を作成してください。状態と予定は Git で無視される `.aura/` ローカル実行ディレクトリに保存されます。
 
 ### 3. 端末をビルドして書き込む
 
@@ -149,12 +150,12 @@ tools/                              Asset, voice, diagnostics and OTA release to
 
 ## 設定の安全性
 
-このリポジトリにはモデルのキー、既定のサービス接続先、個人のキャラクター設定は含まれていません。`.env`、`.docker/`、端末バックアップ、ビルド成果物は自分のプライベート環境で管理してください。ナレッジベースが必要な場合は、自分のサーバーで追加できます。
+このリポジトリにはモデルのキー、既定のサービス接続先、個人のキャラクター設定は含まれていません。`.env`、`.aura/`、端末バックアップ、ビルド成果物は自分のプライベート環境で管理してください。
 
 ## 検証
 
 ```bash
-python3 -m pytest -q
+python3 -m pytest -q tests
 ```
 
 ファームウェアを公開する前には `idf.py build` も実行し、アプリケーションイメージが `0x280000` の OTA パーティションに収まることを確認してください。

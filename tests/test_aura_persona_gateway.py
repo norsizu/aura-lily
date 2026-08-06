@@ -1360,7 +1360,7 @@ def test_aura_runtime_audio_profiles_are_saved_without_secrets(tmp_path, monkeyp
     public = config.public_dict()
 
     assert config.asr_mode == "api"
-    assert config.asr_base_url == "http://host.docker.internal:8766/v1"
+    assert config.asr_base_url == "http://127.0.0.1:8766/v1"
     assert any(item["id"] == "asr-local-whisper-http" for item in public["asr_profiles"])
     assert public["tts_profiles"] == []
 

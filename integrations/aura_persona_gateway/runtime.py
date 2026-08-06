@@ -21,7 +21,7 @@ ASR_MODES = {"local", "api"}
 HISTORY_LIMIT = 12
 PROFILE_LIMIT = 24
 WEATHER_CACHE_LIMIT = 12
-LOCAL_ASR_HTTP_BASE_URL = "http://host.docker.internal:8766/v1"
+LOCAL_ASR_HTTP_BASE_URL = "http://127.0.0.1:8766/v1"
 AURA_MODEL_REASONING_EFFORTS = {"", "none", "low", "medium", "high"}
 TTS_PROVIDERS = [
     {

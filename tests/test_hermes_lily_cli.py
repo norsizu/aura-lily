@@ -1242,7 +1242,7 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
                         "mode": "api",
                         "provider": "custom",
                         "model": "whisper-base-local",
-                        "base_url": "http://host.docker.internal:8766/v1",
+                        "base_url": "http://127.0.0.1:8766/v1",
                         "api_key": "profile-asr-secret",
                     }
                 ],
@@ -1365,14 +1365,14 @@ def test_asr_probe_uses_local_health_endpoint(monkeypatch):
     monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
 
     payload = lily_server._probe_asr_endpoint(
-        "http://host.docker.internal:8766/v1",
+        "http://127.0.0.1:8766/v1",
         provider="custom",
         timeout=3.0,
     )
 
     assert payload["ok"] is True
     assert payload["stage"] == "health"
-    assert captured["url"] == "http://host.docker.internal:8766/health"
+    assert captured["url"] == "http://127.0.0.1:8766/health"
 
 
 def test_asr_probe_accepts_transcription_endpoint_method_errors(monkeypatch):
@@ -10379,12 +10379,10 @@ def test_lily_http_handler_rejects_large_body(monkeypatch):
         thread.join(timeout=3)
 
 
-def test_compose_keeps_stepfun_tts_warm_enabled_by_default():
+def test_native_env_keeps_stepfun_tts_warm_enabled_by_default():
     root = Path(__file__).resolve().parents[1]
-    compose_text = (root / "docker-compose.yml").read_text(encoding="utf-8")
     env_example_text = (root / ".env.example").read_text(encoding="utf-8")
 
-    assert "AURA_TTS_STEPFUN_WS_WARM_ENABLED: ${AURA_TTS_STEPFUN_WS_WARM_ENABLED:-1}" in compose_text
     assert "AURA_TTS_STEPFUN_WS_WARM_ENABLED=1" in env_example_text
 
 

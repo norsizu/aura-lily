@@ -173,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         help="Transcript or user text to benchmark.",
     )
     parser.add_argument("--suite", choices=sorted(BENCHMARK_SUITES), default="", help="Run a fixed benchmark suite instead of one text.")
-    parser.add_argument("--persona-home", default=".docker/aura-persona")
+    parser.add_argument("--persona-home", default=".aura/persona")
     parser.add_argument(
         "--mode",
         choices=[

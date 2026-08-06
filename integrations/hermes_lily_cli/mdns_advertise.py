@@ -1,8 +1,9 @@
 """可选的 mDNS 服务广播（_aura-lily._tcp），供 ESP32 固件在局域网自动发现网关。
 
-默认关闭。Docker Desktop for Mac 的容器发不出局域网组播，应改用宿主机
-`tools/macos/install_mdns_service.sh`（dns-sd + launchd）代播；Linux 原生部署
-可设置 AURA_MDNS_ADVERTISE_ENABLED=1，由本模块通过 python-zeroconf 广播。
+默认关闭。macOS 可以使用宿主机的
+`tools/macos/install_mdns_service.sh`（dns-sd + launchd）代播；也可以在支持
+组播的系统上设置 AURA_MDNS_ADVERTISE_ENABLED=1，由本模块通过
+python-zeroconf 广播。
 zeroconf 是可选依赖：缺失或广播失败时静默降级，不影响网关主流程。
 """
 from __future__ import annotations

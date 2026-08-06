@@ -8,7 +8,7 @@ __pycache__/
 venv/
 
 .env
-.docker/
+.aura/
 
 *.db
 *.log

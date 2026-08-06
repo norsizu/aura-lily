@@ -72,17 +72,18 @@ Aura Lily gateway
             +-- optional Aura state and daily-world layer
 ```
 
-Run the service on a computer, NAS, or server you control. Choose and configure your own model and voice providers. The device must use a LAN, Tailscale, or public address, never `127.0.0.1`.
+Aura Lily runs as native Python processes on a computer, NAS, or server you control; Docker is not required. Choose and configure your own model and voice providers. The device must use a LAN, Tailscale, or public address, never `127.0.0.1`.
 
 ## Quick start
 
 ### 1. Start the service
 
-Requirements: Python 3.11+, Docker Compose, and a configured `hermes` CLI or an OpenAI-compatible model endpoint. Firmware builds need ESP-IDF 5.x.
+Requirements: Python 3.11+, a working `hermes` CLI, and an OpenAI-compatible model endpoint or another Hermes provider. Firmware builds need ESP-IDF 5.x.
 
 ```bash
-cp .env.example .env
-docker compose up --build
+./tools/install_native.sh
+# Edit .env and add your Hermes/provider, ASR, and TTS settings.
+.venv/bin/python tools/run_native.py
 ```
 
 Verify it from another terminal:
@@ -101,7 +102,7 @@ The basic Hermes bridge runs on its own. To enable Aura state, scenes, and sched
 AURA_PERSONA_ENABLED=1
 ```
 
-Soul starts empty. Add your own through the local admin UI or create `.docker/aura-persona/persona/soul.md`. State and schedules live in Git-ignored local runtime storage.
+Soul starts empty. Add your own through the local admin UI or create `.aura/persona/persona/soul.md`. State and schedules live in the Git-ignored `.aura/` runtime directory.
 
 ### 3. Build and flash the device
 
@@ -149,12 +150,12 @@ tools/                              Asset, voice, diagnostics and OTA release to
 
 ## Configuration safety
 
-The repository does not provide model keys, a default service endpoint, or personal character data. Keep `.env`, `.docker/`, device backups, and build artifacts in your own private environment.
+The repository does not provide model keys, a default service endpoint, or personal character data. Keep `.env`, `.aura/`, device backups, and build artifacts in your own private environment.
 
 ## Verify
 
 ```bash
-python3 -m pytest -q
+python3 -m pytest -q tests
 ```
 
 Before publishing firmware, also run `idf.py build` and confirm that the application image fits a `0x280000` OTA partition.

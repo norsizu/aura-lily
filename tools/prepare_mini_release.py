@@ -31,15 +31,13 @@ class CollectedFile:
 
 
 ALLOWLIST = [
-    Entry(".dockerignore"),
     Entry(".env.example"),
     Entry(".gitignore"),
-    Entry("Dockerfile"),
     Entry("README.md"),
+    Entry("README.en.md"),
+    Entry("README.ja.md"),
     Entry("docs/media/", required=False),
-    Entry("AURA_LILY_STATUS_AND_DEPLOYMENT.md"),
     Entry("LICENSE", required=False),
-    Entry("docker-compose.yml"),
     Entry("firmware/esp32/CMakeLists.txt"),
     Entry("firmware/esp32/partitions.csv"),
     Entry("firmware/esp32/sdkconfig.defaults"),
@@ -53,6 +51,10 @@ ALLOWLIST = [
     Entry("tools/agent_provider_doctor.py"),
     Entry("tools/agent_provider_gate.py"),
     Entry("tools/prepare_mini_release.py"),
+    Entry("tools/install_native.sh"),
+    Entry("tools/run_native.py"),
+    Entry("tools/aura_local_asr.sh"),
+    Entry("tools/local_whisper_asr_server.py"),
     Entry("tools/voice_latency_benchmark.py"),
     Entry("tools/voice_latency_matrix.py"),
     Entry("tests/test_hermes_lily_cli.py"),

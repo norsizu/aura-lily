@@ -1313,7 +1313,7 @@ def build_location_summary(persona_config: Any | None = None) -> dict[str, Any]:
         },
         "notes": [
             "device_ip mode uses only the ESP32-reported public IP.",
-            "Docker/client private IP is intentionally ignored for geolocation.",
+            "Client private IP is intentionally ignored for geolocation.",
             "manual mode is the reliable fallback when the device cannot report a public IP.",
         ],
     }
@@ -1556,21 +1556,15 @@ def _model_failure_hint(detail: str) -> str:
     match = re.search(r"Set the ([A-Z][A-Z0-9_]+) environment variable", text)
     if match or "no API key was found" in text:
         var = match.group(1) if match else "对应 provider 的 XXX_API_KEY"
-        return (
-            f"缺少 API Key：把 {var}=<你的key> 写进 .docker/hermes-home/.env"
-            "（hermes 优先读该文件，保存即生效、无需重启容器），再点一次测试"
-        )
+        return f"缺少 API Key：把 {var}=<你的key> 写进项目 .env，重启原生服务后再点一次测试"
     match = re.search(r"The '([A-Za-z0-9_\-]+)' package is required", text)
     if match:
         pkg = match.group(1)
-        return (
-            f"容器镜像缺少 {pkg} SDK：把 {pkg} 加进 requirements.txt，"
-            "然后 docker compose build && docker compose up -d"
-        )
+        return f"当前 Python 环境缺少 {pkg} SDK：在项目虚拟环境中运行 python -m pip install {pkg}，然后重启原生服务"
     if re.search(r"(?i)incorrect api key|invalid[ _]?api[ _-]?key|\b401\b|unauthorized", text):
-        return "API Key 无效或过期：检查 .docker/hermes-home/.env 里的 key 是否填对、是否是该平台的 key"
+        return "API Key 无效或过期：检查项目 .env 里的 key 是否填对、是否是该平台的 key"
     if re.search(r"(?i)unknown provider|invalid provider|not a valid provider|unsupported provider", text):
-        return "provider 名称不被 hermes 识别：确认拼写（如 kimi-for-coding、deepseek），可在容器里执行 hermes model 查看可用列表"
+        return "provider 名称不被 hermes 识别：确认拼写（如 kimi-for-coding、deepseek），可在当前终端执行 hermes model 查看可用列表"
     if re.search(r"(?i)rate.?limit|quota|exhausted|insufficient|\b429\b", text):
         return "配额或频率限制：该订阅额度可能用完了，稍后再试或检查套餐"
     if re.search(r"(?i)timed? ?out|connection|resolve|unreachable|refused", text):
