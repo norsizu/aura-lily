@@ -18,10 +18,6 @@ Aura Lily は、個人のセルフホストと ESP32-S3 ハードウェア向け
   </a>
 </p>
 
-<p align="center">
-  <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Shorts で見る</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">MP4 をダウンロード</a>
-</p>
-
 <video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
   <source src="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">デモ動画を開く</a>

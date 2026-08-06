@@ -18,10 +18,6 @@ Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use
   </a>
 </p>
 
-<p align="center">
-  <a href="https://youtube.com/shorts/B0PyZoMU2sw">Watch the YouTube Short</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Download the MP4</a>
-</p>
-
 <video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
   <source src="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Open the demo video</a>
