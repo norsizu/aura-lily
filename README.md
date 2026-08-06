@@ -125,6 +125,17 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 完整 Web 刷机包和 SHA-256 校验值随每个 Release 发布。固件默认不连接项目服务器，首次启动后请在配网页面填写你自己的 WebSocket 地址。
 
+#### 普通用户：用 ESP LaunchPad 刷机
+
+不安装 ESP-IDF 也可以直接刷写：
+
+1. 准备 Chrome 或 Edge、USB 数据线，并下载 [Release 中的完整 `.bin` 刷机包](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public)。
+2. 打开 [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)，点击顶部 **Connect**，选择设备的 USB 串口并授权。
+3. 切换到 **DIY**，把 Flash Address 改为 `0x0000`，选择下载的完整 `.bin` 文件。
+4. 点击 **Program**，等待进度完成；完成后在 Console 中重置设备，或拔插一次 USB。
+
+这是一个完整合并镜像，只添加这一行文件即可，不要使用默认的 `0x1000` 地址。首次启动需要重新配网并填写你自己的 WebSocket 地址。
+
 在 `menuconfig > Aura Lily` 中设置自己的 WebSocket 和 OTA 清单地址，或在首次启动后的配网页面保存它们。设备配置必须使用你的局域网、Tailscale 或公网地址，而不是 `127.0.0.1`。
 
 ### 4. 使用双 Wi-Fi 与 OTA

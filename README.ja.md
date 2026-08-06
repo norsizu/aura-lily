@@ -125,6 +125,17 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 各 Release に Web 書き込み用イメージと SHA-256 チェックサムを用意します。ファームウェアは既定ではプロジェクトのサーバーへ接続しません。初回プロビジョニング画面で自分の WebSocket アドレスを入力してください。
 
+#### 通常のユーザー：ESP LaunchPad で書き込む
+
+最初の書き込みに ESP-IDF をインストールする必要はありません。
+
+1. Chrome または Edge と USB データケーブルを用意し、[Release の完全な `.bin` イメージ](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public)をダウンロードします。
+2. [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)を開き、上部の **Connect** を押して、端末の USB シリアルポートを選択し、接続を許可します。
+3. **DIY** を開き、Flash Address を `0x0000` に変更して、ダウンロードした完全な `.bin` を選択します。
+4. **Program** を押して完了まで待ちます。Console タブからリセットするか、USB を一度抜き差しします。
+
+これは 1 つの完全な結合イメージなので、ファイルは 1 つだけ追加します。LaunchPad の初期値 `0x1000` は使わず、`0x0000` にしてください。初回起動後は、自分の WebSocket アドレスを入力して再設定します。
+
 `menuconfig > Aura Lily` で自分の WebSocket と OTA マニフェスト URL を設定するか、初回起動時のプロビジョニング画面から保存します。`127.0.0.1` ではなく、LAN、Tailscale、または公開アドレスを使ってください。
 
 ### 4. Wi-Fi と OTA

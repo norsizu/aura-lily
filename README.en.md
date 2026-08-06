@@ -125,6 +125,17 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 Each Release includes the complete Web-flash image and its SHA-256 checksum. The firmware does not connect to a project server by default; enter your own WebSocket address during first-run provisioning.
 
+#### For most users: flash with ESP LaunchPad
+
+You do not need to install ESP-IDF for a first flash:
+
+1. Use Chrome or Edge with a USB data cable, and download the [complete `.bin` image from the Release](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public).
+2. Open [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/), click **Connect**, select the device USB serial port, and grant access.
+3. Open **DIY**, change Flash Address to `0x0000`, and choose the downloaded full `.bin` file.
+4. Click **Program** and wait for completion. Reset from the Console tab or unplug and reconnect the device.
+
+This is one complete merged image, so add only this single file. Do not keep LaunchPad's default `0x1000` address. First boot requires provisioning again with your own WebSocket address.
+
 Set your WebSocket and OTA manifest URLs in `menuconfig > Aura Lily`, or save them from the first-run provisioning page. Use your LAN, Tailscale, or public address instead of `127.0.0.1`.
 
 ### 4. Wi-Fi and OTA
