@@ -13,7 +13,7 @@ Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use
 ## Demo
 
 <p align="center">
-  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">
+  <a href="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7">
     <img src="docs/media/AuraHero-v13-cover.jpg" width="320" alt="Aura Lily device demo">
   </a>
 </p>
@@ -23,7 +23,7 @@ Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use
 </p>
 
 <video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+  <source src="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Open the demo video</a>
 </video>
 
@@ -156,7 +156,7 @@ tools/                              Asset, voice, diagnostics and OTA release to
 
 ## Configuration safety
 
-The repository does not provide model keys, a default service endpoint, or personal character data. Keep `.env`, `.docker/`, device backups, and build artifacts in your own private environment. Add a knowledge base on your own server if you need one.
+The repository does not provide model keys, a default service endpoint, or personal character data. Keep `.env`, `.docker/`, device backups, and build artifacts in your own private environment.
 
 ## Verify
 

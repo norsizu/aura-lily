@@ -13,7 +13,7 @@ Aura Lily 是 Aura 的单机本地部署版和轻量开源版，面向个人自�
 ## 演示
 
 <p align="center">
-  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">
+  <a href="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7">
     <img src="docs/media/AuraHero-v13-cover.jpg" width="320" alt="Aura Lily device demo">
   </a>
 </p>
@@ -23,7 +23,7 @@ Aura Lily 是 Aura 的单机本地部署版和轻量开源版，面向个人自�
 </p>
 
 <video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+  <source src="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">打开演示视频</a>
 </video>
 
@@ -156,7 +156,7 @@ tools/                              Asset, voice, diagnostics and OTA release to
 
 ## 配置安全
 
-仓库不提供模型密钥、默认服务地址或个人角色内容。请将 `.env`、`.docker/`、设备备份和构建产物留在自己的私有环境中；需要知识库时，可在自有服务端按需扩展。
+仓库不提供模型密钥、默认服务地址或个人角色内容。请将 `.env`、`.docker/`、设备备份和构建产物留在自己的私有环境中。
 
 ## 验证
 
