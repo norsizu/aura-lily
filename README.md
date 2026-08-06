@@ -22,8 +22,8 @@ Aura Lily 是 Aura 的单机本地部署版和轻量开源版，面向个人自�
   <a href="https://youtube.com/shorts/B0PyZoMU2sw">观看 YouTube Shorts</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">下载 MP4</a>
 </p>
 
-<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">打开演示视频</a>
 </video>
 
@@ -112,6 +112,8 @@ Soul 默认为空；你可以在本地管理页面填写自己的内容，或创
 
 ### 3. 编译并刷写设备
 
+仓库包含完整固件源码和设备资源。普通用户可以从 [Releases](https://github.com/norsizu/aura-lily/releases) 下载预编译的完整 Web 刷机包；开发者也可以按下面的命令自行编译。Web 刷机包适用于 Waveshare ESP32-S3-RLCD-4.2，首次刷写会覆盖设备固件分区，刷完后需要重新配网。
+
 ```bash
 cd firmware/esp32
 source "$HOME/esp/esp-idf/export.sh"
@@ -120,6 +122,8 @@ idf.py menuconfig
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
+
+完整 Web 刷机包和 SHA-256 校验值随每个 Release 发布。固件默认不连接项目服务器，首次启动后请在配网页面填写你自己的 WebSocket 地址。
 
 在 `menuconfig > Aura Lily` 中设置自己的 WebSocket 和 OTA 清单地址，或在首次启动后的配网页面保存它们。设备配置必须使用你的局域网、Tailscale 或公网地址，而不是 `127.0.0.1`。
 

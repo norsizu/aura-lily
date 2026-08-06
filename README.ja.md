@@ -22,8 +22,8 @@ Aura Lily は、個人のセルフホストと ESP32-S3 ハードウェア向け
   <a href="https://youtube.com/shorts/B0PyZoMU2sw">YouTube Shorts で見る</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">MP4 をダウンロード</a>
 </p>
 
-<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">デモ動画を開く</a>
 </video>
 
@@ -112,6 +112,8 @@ Soul は空の状態で始まります。ローカル管理 UI から自分で�
 
 ### 3. 端末をビルドして書き込む
 
+リポジトリにはファームウェアのソースコードと端末用アセットがすべて含まれています。通常は [Releases](https://github.com/norsizu/aura-lily/releases) から、ビルド済みの Web 書き込み用イメージをダウンロードしてください。開発者は次のコマンドで自分でビルドできます。Web 書き込み用イメージは Waveshare ESP32-S3-RLCD-4.2 向けです。最初の有線書き込みではファームウェア領域が置き換わるため、完了後にもう一度プロビジョニングしてください。
+
 ```bash
 cd firmware/esp32
 source "$HOME/esp/esp-idf/export.sh"
@@ -120,6 +122,8 @@ idf.py menuconfig
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
+
+各 Release に Web 書き込み用イメージと SHA-256 チェックサムを用意します。ファームウェアは既定ではプロジェクトのサーバーへ接続しません。初回プロビジョニング画面で自分の WebSocket アドレスを入力してください。
 
 `menuconfig > Aura Lily` で自分の WebSocket と OTA マニフェスト URL を設定するか、初回起動時のプロビジョニング画面から保存します。`127.0.0.1` ではなく、LAN、Tailscale、または公開アドレスを使ってください。
 

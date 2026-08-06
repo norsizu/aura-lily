@@ -22,8 +22,8 @@ Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use
   <a href="https://youtube.com/shorts/B0PyZoMU2sw">Watch the YouTube Short</a> · <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Download the MP4</a>
 </p>
 
-<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://raw.githubusercontent.com/norsizu/aura-lily-public/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
+<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
+  <source src="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-full-english-answer.mp4" type="video/mp4">
   <a href="docs/media/AuraHero-v13-full-english-answer.mp4">Open the demo video</a>
 </video>
 
@@ -112,6 +112,8 @@ Soul starts empty. Add your own through the local admin UI or create `.docker/au
 
 ### 3. Build and flash the device
 
+The repository includes the complete firmware source and device assets. Most users should download the prebuilt full Web-flash image from [Releases](https://github.com/norsizu/aura-lily/releases); developers can build it with the commands below. The Web-flash image targets the Waveshare ESP32-S3-RLCD-4.2. A first wired flash replaces the firmware partitions, so provisioning must be completed again afterwards.
+
 ```bash
 cd firmware/esp32
 source "$HOME/esp/esp-idf/export.sh"
@@ -120,6 +122,8 @@ idf.py menuconfig
 idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
+
+Each Release includes the complete Web-flash image and its SHA-256 checksum. The firmware does not connect to a project server by default; enter your own WebSocket address during first-run provisioning.
 
 Set your WebSocket and OTA manifest URLs in `menuconfig > Aura Lily`, or save them from the first-run provisioning page. Use your LAN, Tailscale, or public address instead of `127.0.0.1`.
 
