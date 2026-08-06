@@ -12,16 +12,13 @@ Aura Lily 是 Aura 的单机本地部署版和轻量开源版，面向个人自�
 
 ## 演示
 
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7">
-    <img src="docs/media/AuraHero-v13-cover.jpg" width="320" alt="Aura Lily device demo">
-  </a>
-</p>
+宣传视频 1
 
-<video controls preload="metadata" poster="https://raw.githubusercontent.com/norsizu/aura-lily/main/docs/media/AuraHero-v13-cover.jpg" width="640">
-  <source src="https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7" type="video/mp4">
-  <a href="docs/media/AuraHero-v13-full-english-answer.mp4">打开演示视频</a>
-</video>
+https://github.com/user-attachments/assets/97038f7a-a477-40c2-a7de-cabaafbf24f7
+
+宣传视频 2
+
+https://github.com/user-attachments/assets/ee1e3867-b63f-47fb-a90f-763486a94bb2
 
 ## 外观与硬件
 
