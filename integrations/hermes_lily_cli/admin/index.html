@@ -253,17 +253,7 @@
         </div>
         <section class="panel">
           <h3>ASR 语音识别</h3>
-          <p class="hint">支持 API 和本地模式。默认真机链路优先使用 Step Plan ASR SSE + Aura LLM + StepFun TTS，保证回答进入 Aura/Lily 语义层；Key 可以从已保存的 StepFun Plan Key 复用到 ASR。</p>
-          <div class="inline-section">
-            <h4>小智式低延迟链路</h4>
-            <p class="hint" id="xiaozhiLatencyHint">小智式语义流式链路会用实时 ASR 只做听写，回复仍进入 Aura/Lily，再由 StepFun TTS 边合成边播放。Plan Realtime 是实验直连，最快但会绕过 Aura/Lily。</p>
-            <div class="actions compact">
-              <button id="applyStepfunOpenPlatform" class="secondary" type="button">套用 Open Platform 流式</button>
-              <button id="applyXiaozhiAsr" class="secondary" type="button">套用语义流式</button>
-              <button id="applyStepPlanRealtime" class="secondary" type="button">套用实验 Realtime</button>
-              <button id="applyStepPlanAsr" class="secondary" type="button">套用 Plan ASR</button>
-            </div>
-          </div>
+          <p class="hint">支持本地命令、OpenAI-compatible API 和多家云端 ASR。选择供应商后按提示填写密钥与 Provider Options；语音识别结果始终进入 Aura/Lily 对话链路。</p>
           <div class="inline-section">
             <h4>已保存 ASR 配置</h4>
             <div class="row">
@@ -318,12 +308,14 @@
             <div><label for="asrLanguage">识别语言</label><input id="asrLanguage" placeholder="zh"></div>
             <div><label for="asrTimeout">ASR 超时秒</label><input id="asrTimeout" type="number" min="1" step="1"></div>
           </div>
-            <div class="actions">
-              <button id="saveAudioRuntimeTop">保存语音模型配置</button>
-              <button id="testAsr" class="secondary" type="button">测试 ASR</button>
-              <button id="copyStepPlanKeyToAsr" class="secondary" type="button">复用已保存 StepFun Key 到 ASR</button>
-              <button id="clearAsrKey" class="secondary" type="button">清除 ASR API Key</button>
-            </div>
+          <label for="asrProviderOptions">Provider Options (JSON)</label>
+          <textarea id="asrProviderOptions" rows="4" spellcheck="false" placeholder='例如：{"appid":"...","cluster":"...","access_token":"..."}'></textarea>
+          <p class="hint" id="asrOptionsHint"></p>
+          <div class="actions">
+            <button id="saveAudioRuntimeTop">保存语音模型配置</button>
+            <button id="testAsr" class="secondary" type="button">测试 ASR</button>
+            <button id="clearAsrKey" class="secondary" type="button">清除 ASR API Key</button>
+          </div>
           <div id="asrTestResult" class="test-result"></div>
         </section>
 
@@ -382,6 +374,9 @@
             </div>
             <label for="ttsTimeout">TTS 测试超时秒</label>
             <input id="ttsTimeout" type="number" min="1" step="1">
+            <label for="ttsProviderOptions">Provider Options (JSON)</label>
+            <textarea id="ttsProviderOptions" rows="4" spellcheck="false" placeholder='例如：{"appid":"...","cluster":"...","access_token":"..."}'></textarea>
+            <p class="hint" id="ttsOptionsHint"></p>
             <p class="hint" id="ttsHint"></p>
           <div class="actions">
             <button id="saveAuraRuntime">保存语音模型配置</button>

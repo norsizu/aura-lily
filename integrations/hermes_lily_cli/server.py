@@ -1,31 +1,23 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import base64
 import hmac
-import io
 import json
 import os
 import re
 import signal
-import socket
 import sys
 import time
 import traceback
-import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore, Lock, Thread, current_thread, main_thread
 from time import monotonic
 from typing import Any, Iterator
-from urllib.parse import parse_qs, unquote
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.error import URLError
 from urllib.request import Request, urlopen
-
-from websockets.asyncio.client import connect as ws_connect
-from websockets.exceptions import ConnectionClosed
 
 from .bridge import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -43,6 +35,12 @@ from .runtime_config import (
 )
 from .quota import query_quota
 from .dialogue_quota import DEFAULT_LIMIT, DEFAULT_WINDOW_SECONDS, DialogueQuota
+from .gateway import (
+    DEVICE_SAMPLE_RATE as GATEWAY_DEVICE_SAMPLE_RATE,
+    pcm_to_wav_bytes,
+    synthesize_tts,
+    transcribe_with_api,
+)
 
 try:
     from integrations.aura_persona_gateway.admin import (
@@ -107,13 +105,11 @@ LEGACY_ADMIN_USER_ENV = "AURA_PERSONA_ADMIN_USER"
 ADMIN_PASSWORD_ENV = "AURA_LILY_ADMIN_PASSWORD"
 LEGACY_ADMIN_PASSWORD_ENV = "AURA_PERSONA_ADMIN_PASSWORD"
 GATEWAY_STATUS_PATH_ENV = "AURA_LILY_GATEWAY_STATUS_PATH"
-DEFAULT_GATEWAY_STATUS_PATH = "/data/aura-persona/config/gateway_status.json"
+DEFAULT_GATEWAY_STATUS_PATH = ".aura/persona/config/gateway_status.json"
 DIALOGUE_QUOTA_DB_ENV = "AURA_DIALOGUE_QUOTA_DB"
-DEFAULT_DIALOGUE_QUOTA_DB = "/data/aura-persona/config/dialogue_quota.sqlite3"
+DEFAULT_DIALOGUE_QUOTA_DB = ".aura/persona/config/dialogue_quota.sqlite3"
 QUOTA_REFRESH_SECONDS_ENV = "AURA_PROVIDER_QUOTA_REFRESH_SECONDS"
 DEFAULT_QUOTA_REFRESH_SECONDS = 30 * 60
-DEVICE_SAMPLE_RATE = 16_000
-MIN_AUDIO_SAMPLE_RATE = 8_000
 _USER_GEO_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
@@ -414,115 +410,6 @@ class LilyRuntime:
         self._schedule_aura_llm_warm(reason="update")
         return {"ok": True, "config": self.aura_runtime_config.public_dict()}
 
-    def copy_stepfun_plan_key_to_asr(self) -> dict[str, Any]:
-        self._refresh_aura_runtime_config()
-        if not self.aura_runtime_config or not update_aura_runtime:
-            return {"ok": False, "error": "aura runtime config is unavailable"}
-        config = self.aura_runtime_config
-        candidates = [
-            (
-                "Aura LLM",
-                str(config.aura_model_api_key or "").strip(),
-                str(config.aura_model_provider or "").strip().lower(),
-                str(config.aura_model_base_url or "").strip(),
-            ),
-            (
-                "TTS",
-                str(config.tts_api_key or "").strip(),
-                str(config.tts_provider or "").strip().lower(),
-                str(config.tts_base_url or "").strip(),
-            ),
-        ]
-        source = ""
-        api_key = ""
-        for label, key, provider, base_url in candidates:
-            if key and provider == "stepfun" and "step_plan" in base_url:
-                source = label
-                api_key = key
-                break
-        if not api_key:
-            return {
-                "ok": False,
-                "error": "没有可复用的已保存 StepFun Step Plan Key；请先保存 Aura LLM 或 TTS 的 StepFun Plan Key。",
-            }
-        provider = str(config.asr_provider or "").strip().lower()
-        model = str(config.asr_model or "").strip()
-        base_url = str(config.asr_base_url or "").strip()
-        if provider == "stepfun" and model == "stepaudio-2.5-asr" and "step_plan" in base_url:
-            asr_provider = "stepfun"
-            asr_model = "stepaudio-2.5-asr"
-            asr_base_url = base_url
-        else:
-            asr_provider = "stepfun"
-            asr_model = "stepaudio-2.5-asr"
-            asr_base_url = "https://api.stepfun.com/step_plan/v1"
-        self.aura_runtime_config = update_aura_runtime(self.aura_runtime_config, {
-            "asr_enabled": True,
-            "asr_mode": "api",
-            "asr_provider": asr_provider,
-            "asr_model": asr_model,
-            "asr_base_url": asr_base_url,
-            "asr_api_key": api_key,
-            "asr_language": config.asr_language or "zh",
-        })
-        self._schedule_aura_llm_warm(reason="copy_stepfun_plan_key")
-        return {
-            "ok": True,
-            "source": source,
-            "config": self.aura_runtime_config.public_dict(),
-        }
-
-    def apply_stepfun_open_platform(self) -> dict[str, Any]:
-        self._refresh_aura_runtime_config()
-        if not self.aura_runtime_config or not update_aura_runtime:
-            return {"ok": False, "error": "aura runtime config is unavailable"}
-        config = self.aura_runtime_config
-        candidates = [
-            ("Aura LLM", str(config.aura_model_api_key or "").strip()),
-            ("TTS", str(config.tts_api_key or "").strip()),
-            ("ASR", str(config.asr_api_key or "").strip()),
-        ]
-        source = ""
-        api_key = ""
-        for label, key in candidates:
-            if key:
-                source = label
-                api_key = key
-                break
-        if not api_key:
-            return {
-                "ok": False,
-                "error": "没有可复用的 StepFun API Key；请先在 Aura LLM、TTS 或 ASR 任一处保存 Key。",
-            }
-        self.aura_runtime_config = update_aura_runtime(self.aura_runtime_config, {
-            "aura_model_mode": "aura_model",
-            "aura_model_provider": "stepfun",
-            "aura_model_model": "stepaudio-2.5-chat",
-            "aura_model_base_url": "https://api.stepfun.com/v1",
-            "aura_model_api_key": api_key,
-            "aura_model_reasoning_effort": "",
-            "aura_model_max_tokens": 96,
-            "tts_enabled": True,
-            "tts_provider": "stepfun",
-            "tts_model": "stepaudio-2.5-tts",
-            "tts_base_url": "https://api.stepfun.com/v1",
-            "tts_api_key": api_key,
-            "asr_enabled": True,
-            "asr_mode": "api",
-            "asr_provider": "stepfun",
-            "asr_model": "stepaudio-2.5-asr-stream",
-            "asr_base_url": "https://api.stepfun.com/v1",
-            "asr_api_key": api_key,
-            "asr_language": config.asr_language or "zh",
-        })
-        self._schedule_aura_llm_warm(reason="apply_stepfun_open_platform")
-        return {
-            "ok": True,
-            "source": source,
-            "billing_scope": "open_platform",
-            "config": self.aura_runtime_config.public_dict(),
-        }
-
     def refresh_aura_weather(self, updates: dict[str, Any]) -> dict[str, Any]:
         self._refresh_aura_runtime_config()
         if not self.aura_runtime_config or not refresh_aura_weather:
@@ -738,39 +625,31 @@ class LilyRuntime:
         if not config.tts_enabled:
             return _test_result(ok=False, kind="tts", provider=config.tts_provider, model=config.tts_model, detail="TTS 未启用")
         started = monotonic()
-        probe = _probe_tts_endpoint(
-            config.tts_base_url,
-            provider=config.tts_provider,
-            model=config.tts_model,
-            voice=config.tts_voice,
-            api_key=config.tts_api_key,
-            audio_format=config.tts_format,
-            sample_rate=int(config.tts_sample_rate or 0),
-            timeout=float(config.tts_timeout_seconds or 15),
-        )
+        result = synthesize_tts(config, "你好，这是 Aura Lily 的语音服务测试。")
+        source_rate = max(8_000, int(result.source_sample_rate or config.tts_sample_rate or GATEWAY_DEVICE_SAMPLE_RATE))
+        endpoint_host = urlsplit(str(config.tts_base_url or "")).hostname or ""
         payload = _test_result(
-            ok=probe.get("ok", False),
+            ok=result.ok,
             kind="tts",
             provider=config.tts_provider,
             model=config.tts_model,
             latency_ms=max(0, int((monotonic() - started) * 1000)),
-            detail=probe.get("detail") or "",
-            endpoint_host=probe.get("endpoint_host") or "",
-            stage=probe.get("stage") or "",
+            detail="已按设备 PCM 链路合成试听。" if result.ok else result.detail,
+            endpoint_host=endpoint_host,
+            stage="synthesis",
         )
-        for key in (
-            "requested_sample_rate",
-            "source_sample_rate",
-            "device_sample_rate",
-            "resampled_for_device",
-            "audio_format",
-            "audio_bytes",
-            "device_audio_bytes",
-            "audio_data_url",
-            "audio_mime_type",
-        ):
-            if key in probe:
-                payload[key] = probe[key]
+        if result.ok:
+            wav_bytes = pcm_to_wav_bytes(result.audio, sample_rate=GATEWAY_DEVICE_SAMPLE_RATE)
+            payload.update({
+                "source_sample_rate": source_rate,
+                "device_sample_rate": GATEWAY_DEVICE_SAMPLE_RATE,
+                "resampled_for_device": source_rate != GATEWAY_DEVICE_SAMPLE_RATE,
+                "audio_format": "pcm_s16le",
+                "audio_bytes": len(result.audio),
+                "device_audio_bytes": len(result.audio),
+                "audio_mime_type": "audio/wav",
+                "audio_data_url": "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii"),
+            })
         return payload
 
     def test_asr(self) -> dict[str, Any]:
@@ -787,58 +666,25 @@ class LilyRuntime:
                 model=config.asr_model,
                 detail="本地 ASR 配置已保存；实际模型加载会在语音链路接入时验证。",
             )
-        if config.asr_provider == "stepfun" and "stream" in str(config.asr_model or "").lower():
-            started = monotonic()
-            probe = _probe_stepfun_realtime_asr_ws(
-                config.asr_base_url,
-                model=config.asr_model,
-                language=config.asr_language,
-                api_key=config.asr_api_key,
-                timeout=float(config.asr_timeout_seconds or 30),
-            )
-            return _test_result(
-                ok=probe.get("ok", False),
-                kind="asr",
-                provider=config.asr_provider,
-                model=config.asr_model,
-                latency_ms=max(0, int((monotonic() - started) * 1000)),
-                detail=probe.get("detail") or "",
-                endpoint_host=probe.get("endpoint_host") or "",
-                stage=probe.get("stage") or "",
-            )
-        if config.asr_provider in {"stepfun-realtime", "stepfun_realtime"}:
-            started = monotonic()
-            probe = _probe_stepfun_step_plan_realtime_ws(
-                config.asr_base_url,
-                model=config.asr_model,
-                api_key=config.asr_api_key,
-                timeout=float(config.asr_timeout_seconds or 30),
-            )
-            return _test_result(
-                ok=probe.get("ok", False),
-                kind="asr",
-                provider=config.asr_provider,
-                model=config.asr_model,
-                latency_ms=max(0, int((monotonic() - started) * 1000)),
-                detail=probe.get("detail") or "",
-                endpoint_host=probe.get("endpoint_host") or "",
-                stage=probe.get("stage") or "",
-            )
         started = monotonic()
-        probe = _probe_asr_endpoint(
-            config.asr_base_url,
-            provider=config.asr_provider,
-            timeout=float(config.asr_timeout_seconds or 30),
-        )
+        probe_wav = pcm_to_wav_bytes(b"\x00\x00" * (GATEWAY_DEVICE_SAMPLE_RATE // 3), sample_rate=GATEWAY_DEVICE_SAMPLE_RATE)
+        result = transcribe_with_api(config, probe_wav)
+        service_accepted_probe = result.status == "empty_transcript"
         return _test_result(
-            ok=probe.get("ok", False),
+            ok=result.ok or service_accepted_probe,
             kind="asr",
             provider=config.asr_provider,
             model=config.asr_model,
             latency_ms=max(0, int((monotonic() - started) * 1000)),
-            detail=probe.get("detail") or "",
-            endpoint_host=probe.get("endpoint_host") or "",
-            stage=probe.get("stage") or "",
+            detail=(
+                "服务已接受标准 16kHz WAV 测试音频；静音测试没有返回文字。"
+                if service_accepted_probe
+                else "已走实际 ASR 转写链路。"
+                if result.ok
+                else result.detail or result.status
+            ),
+            endpoint_host=urlsplit(str(config.asr_base_url or "")).hostname or "",
+            stage="transcription",
         )
 
 
@@ -970,20 +816,6 @@ def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 response = runtime.refresh_aura_weather({})
                 self._send_json(response, status=200 if response.get("ok") else 502)
-                return
-            if self.path == "/admin/aura/copy-stepfun-plan-key":
-                if not self._admin_allowed():
-                    self._send_json({"ok": False, "error": "unauthorized"}, status=401)
-                    return
-                response = runtime.copy_stepfun_plan_key_to_asr()
-                self._send_json(response, status=200 if response.get("ok") else 400)
-                return
-            if self.path == "/admin/aura/apply-stepfun-open-platform":
-                if not self._admin_allowed():
-                    self._send_json({"ok": False, "error": "unauthorized"}, status=401)
-                    return
-                response = runtime.apply_stepfun_open_platform()
-                self._send_json(response, status=200 if response.get("ok") else 400)
                 return
             if self.path == "/admin/test/hermes":
                 if not self._admin_allowed():
@@ -1599,638 +1431,6 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     if text in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
-
-
-def _probe_tts_endpoint(
-    base_url: str,
-    *,
-    provider: str = "",
-    model: str = "",
-    voice: str = "",
-    api_key: str = "",
-    audio_format: str = "pcm",
-    sample_rate: int = 0,
-    timeout: float,
-) -> dict[str, Any]:
-    text = str(base_url or "").strip()
-    if not text:
-        return {"ok": False, "detail": "TTS Base URL 为空"}
-    endpoint_url = _tts_speech_url(text, provider=provider)
-    if not endpoint_url:
-        return {"ok": False, "detail": "TTS Base URL 需要是 http/https 地址"}
-    if str(provider or "").strip().lower() not in {"voxcpm", "voxcpm-aura"}:
-        speech = _probe_tts_speech(
-            endpoint_url,
-            model=model,
-            voice=voice,
-            api_key=api_key,
-            audio_format=audio_format,
-            sample_rate=sample_rate,
-            timeout=timeout,
-        )
-        speech["stage"] = "speech"
-        if speech.get("ok"):
-            speech["detail"] = "TTS speech generation reachable."
-            return speech
-        speech["detail"] = f"TTS speech generation failed: {speech.get('detail') or 'unknown'}"
-        return speech
-    health_url = _health_url_for(text)
-    health = _probe_http_endpoint(health_url, timeout=timeout)
-    if not health.get("ok"):
-        health["stage"] = "health"
-        detail = health.get("detail") or "unknown"
-        health["detail"] = f"TTS health check failed: {detail}"
-        return health
-    speech = _probe_tts_speech(
-        endpoint_url,
-        model=model,
-        voice=voice,
-        api_key=api_key,
-        audio_format=audio_format,
-        sample_rate=sample_rate,
-        timeout=timeout,
-    )
-    if speech.get("ok"):
-        speech["stage"] = "speech"
-        speech["detail"] = "TTS health and speech generation reachable."
-        return speech
-    speech["stage"] = "speech"
-    speech["detail"] = f"health ok; speech failed: {speech.get('detail') or 'unknown'}"
-    return speech
-
-
-def _probe_asr_endpoint(
-    base_url: str,
-    *,
-    provider: str = "",
-    timeout: float,
-) -> dict[str, Any]:
-    text = str(base_url or "").strip()
-    if not text:
-        return {"ok": False, "detail": "ASR Base URL 为空"}
-    endpoint_url = _asr_transcription_url(text, provider=provider)
-    if not endpoint_url:
-        return {"ok": False, "detail": "ASR Base URL 需要是 http/https 地址"}
-    provider_id = str(provider or "").strip().lower()
-    if provider_id in {"custom", "local", "local-whisper", "local-whisper-http"}:
-        health_url = _health_url_for(text)
-        health = _probe_http_endpoint(health_url, timeout=min(max(1.0, timeout), 5.0))
-        health["stage"] = "health"
-        if health.get("ok"):
-            health["detail"] = "ASR health endpoint reachable."
-            return health
-    probe = _probe_http_endpoint(endpoint_url, timeout=min(max(1.0, timeout), 5.0))
-    probe["stage"] = "stepfun_sse" if provider_id == "stepfun" else "transcriptions"
-    if probe.get("ok"):
-        probe["detail"] = (
-            "StepFun ASR SSE endpoint reachable."
-            if provider_id == "stepfun"
-            else "ASR transcription endpoint reachable."
-        )
-    return probe
-
-
-def _stepfun_realtime_asr_ws_url(base_url: str) -> str:
-    text = str(base_url or "").strip()
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
-        return ""
-    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/audio/asr/sse"):
-        path = path[: -len("/audio/asr/sse")]
-    if path.endswith("/audio/asr"):
-        path = path[: -len("/audio/asr")]
-    if path.endswith("/realtime/asr/stream"):
-        endpoint_path = path
-    elif not path:
-        endpoint_path = "/v1/realtime/asr/stream"
-    elif path.endswith("/v1"):
-        endpoint_path = f"{path}/realtime/asr/stream"
-    else:
-        endpoint_path = f"{path}/realtime/asr/stream"
-    return urlunsplit((scheme, parsed.netloc, endpoint_path, parsed.query, ""))
-
-
-def _stepfun_step_plan_realtime_ws_url(base_url: str, *, model: str) -> str:
-    text = str(base_url or "").strip()
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
-        return ""
-    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/realtime"):
-        endpoint_path = path
-    elif not path:
-        endpoint_path = "/step_plan/v1/realtime"
-    elif path.endswith("/step_plan/v1"):
-        endpoint_path = f"{path}/realtime"
-    else:
-        endpoint_path = f"{path}/realtime"
-    query = dict(_query_items(parsed.query))
-    query["model"] = str(model or "").strip() or "stepaudio-2.5-realtime"
-    return urlunsplit((scheme, parsed.netloc, endpoint_path, urlencode(query), ""))
-
-
-def _query_items(query: str) -> list[tuple[str, str]]:
-    if not query:
-        return []
-    rows: list[tuple[str, str]] = []
-    for part in str(query).split("&"):
-        if not part:
-            continue
-        key, _, value = part.partition("=")
-        rows.append((key, value))
-    return rows
-
-
-def _probe_stepfun_step_plan_realtime_ws(
-    base_url: str,
-    *,
-    model: str,
-    api_key: str,
-    timeout: float,
-) -> dict[str, Any]:
-    ws_url = _stepfun_step_plan_realtime_ws_url(base_url, model=model)
-    parsed = urlsplit(ws_url)
-    host = parsed.hostname or ""
-    if not ws_url:
-        return {
-            "ok": False,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": "StepFun Step Plan Realtime Base URL 需要是 http/https/ws/wss 地址",
-            "endpoint_host": host,
-        }
-    if not str(api_key or "").strip():
-        return {
-            "ok": False,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": "StepFun Step Plan Realtime API Key 未配置",
-            "endpoint_host": host,
-        }
-    started = monotonic()
-    try:
-        return asyncio.run(_probe_stepfun_step_plan_realtime_ws_async(
-            ws_url,
-            api_key=api_key,
-            timeout=max(1.0, min(float(timeout or 5.0), 10.0)),
-            started=started,
-        ))
-    except RuntimeError as exc:
-        return {
-            "ok": False,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-async def _probe_stepfun_step_plan_realtime_ws_async(
-    ws_url: str,
-    *,
-    api_key: str,
-    timeout: float,
-    started: float,
-) -> dict[str, Any]:
-    parsed = urlsplit(ws_url)
-    host = parsed.hostname or ""
-    headers = {"Authorization": f"Bearer {str(api_key or '').strip()}"}
-    try:
-        async with ws_connect(
-            ws_url,
-            additional_headers=headers,
-            open_timeout=min(5.0, timeout),
-            ping_interval=None,
-            max_size=2 * 1024 * 1024,
-        ) as step_ws:
-            await step_ws.send(json.dumps(
-                _stepfun_step_plan_realtime_session_update(),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ))
-            while True:
-                event = _json_object(await asyncio.wait_for(step_ws.recv(), timeout=timeout))
-                event_type = str(event.get("type") or event.get("event") or "").lower()
-                if any(marker in event_type for marker in ("error", "failed")):
-                    data = event.get("data") if isinstance(event.get("data"), dict) else event
-                    return {
-                        "ok": False,
-                        "stage": "stepfun_step_plan_realtime_ws",
-                        "detail": _stepfun_ws_error_detail(data),
-                        "endpoint_host": host,
-                        "latency_ms": max(0, int((monotonic() - started) * 1000)),
-                    }
-                if event_type:
-                    return {
-                        "ok": True,
-                        "stage": "stepfun_step_plan_realtime_ws",
-                        "detail": f"StepFun Step Plan Realtime WebSocket reachable ({event_type}).",
-                        "endpoint_host": host,
-                        "latency_ms": max(0, int((monotonic() - started) * 1000)),
-                    }
-    except asyncio.TimeoutError:
-        return {
-            "ok": False,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": "StepFun Step Plan Realtime WebSocket timeout",
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-    except (OSError, ConnectionClosed, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "ok": False,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-def _stepfun_step_plan_realtime_session_update(*, voice: str = "") -> dict[str, Any]:
-    session: dict[str, Any] = {
-        "modalities": ["text", "audio"],
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16",
-        "turn_detection": {
-            "type": "server_vad",
-            "prefix_padding_ms": 500,
-            "silence_duration_ms": 800,
-            "energy_awakeness_threshold": 2500,
-        },
-    }
-    if str(voice or "").strip():
-        session["voice"] = str(voice).strip()
-    return {
-        "type": "session.update",
-        "session": session,
-    }
-
-
-def _probe_stepfun_realtime_asr_ws(
-    base_url: str,
-    *,
-    model: str,
-    language: str,
-    api_key: str,
-    timeout: float,
-) -> dict[str, Any]:
-    ws_url = _stepfun_realtime_asr_ws_url(base_url)
-    parsed = urlsplit(ws_url)
-    host = parsed.hostname or ""
-    if not ws_url:
-        return {
-            "ok": False,
-            "stage": "stepfun_realtime_ws",
-            "detail": "StepFun realtime ASR Base URL 需要是 http/https/ws/wss 地址",
-            "endpoint_host": host,
-        }
-    if not str(api_key or "").strip():
-        return {
-            "ok": False,
-            "stage": "stepfun_realtime_ws",
-            "detail": "StepFun realtime ASR API Key 未配置",
-            "endpoint_host": host,
-        }
-    started = monotonic()
-    try:
-        return asyncio.run(_probe_stepfun_realtime_asr_ws_async(
-            ws_url,
-            model=model,
-            language=language,
-            api_key=api_key,
-            timeout=max(1.0, min(float(timeout or 5.0), 10.0)),
-            started=started,
-        ))
-    except RuntimeError as exc:
-        return {
-            "ok": False,
-            "stage": "stepfun_realtime_ws",
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-async def _probe_stepfun_realtime_asr_ws_async(
-    ws_url: str,
-    *,
-    model: str,
-    language: str,
-    api_key: str,
-    timeout: float,
-    started: float,
-) -> dict[str, Any]:
-    parsed = urlsplit(ws_url)
-    host = parsed.hostname or ""
-    headers = {"Authorization": f"Bearer {str(api_key or '').strip()}"}
-    try:
-        async with ws_connect(
-            ws_url,
-            additional_headers=headers,
-            open_timeout=min(5.0, timeout),
-            ping_interval=None,
-            max_size=2 * 1024 * 1024,
-        ) as step_ws:
-            await step_ws.send(json.dumps(
-                _stepfun_realtime_asr_session_update(model=model, language=language),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ))
-            while True:
-                event = _json_object(await asyncio.wait_for(step_ws.recv(), timeout=timeout))
-                event_type = str(event.get("type") or event.get("event") or "").lower()
-                if any(marker in event_type for marker in ("error", "failed")):
-                    data = event.get("data") if isinstance(event.get("data"), dict) else event
-                    return {
-                        "ok": False,
-                        "stage": "stepfun_realtime_ws",
-                        "detail": _stepfun_ws_error_detail(data),
-                        "endpoint_host": host,
-                        "latency_ms": max(0, int((monotonic() - started) * 1000)),
-                    }
-                if event_type in {"session.created", "session.updated"} or event_type:
-                    return {
-                        "ok": True,
-                        "stage": "stepfun_realtime_ws",
-                        "detail": f"StepFun realtime ASR WebSocket reachable ({event_type or 'connected'}).",
-                        "endpoint_host": host,
-                        "latency_ms": max(0, int((monotonic() - started) * 1000)),
-                    }
-    except asyncio.TimeoutError:
-        return {
-            "ok": False,
-            "stage": "stepfun_realtime_ws",
-            "detail": "StepFun realtime ASR WebSocket timeout",
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-    except (OSError, ConnectionClosed, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "ok": False,
-            "stage": "stepfun_realtime_ws",
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-def _stepfun_realtime_asr_session_update(*, model: str, language: str) -> dict[str, Any]:
-    return {
-        "type": "session.update",
-        "session": {
-            "audio": {
-                "input": {
-                    "format": {
-                        "type": "pcm",
-                        "codec": "pcm_s16le",
-                        "rate": DEVICE_SAMPLE_RATE,
-                        "bits": 16,
-                        "channel": 1,
-                    },
-                    "transcription": {
-                        "model": str(model or "").strip() or "stepaudio-2.5-asr-stream",
-                        "language": str(language or "").strip() or "zh",
-                        "prompt": "请记录下你所听到的语音内容。",
-                        "full_rerun_on_commit": True,
-                        "enable_itn": True,
-                    },
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "silence_duration_ms": 800,
-                        "threshold": 0.5,
-                    },
-                },
-            },
-        },
-    }
-
-
-def _json_object(message: Any) -> dict[str, Any]:
-    if isinstance(message, bytes):
-        message = message.decode("utf-8", errors="replace")
-    payload = json.loads(str(message or "{}"))
-    return payload if isinstance(payload, dict) else {}
-
-
-def _stepfun_ws_error_detail(data: dict[str, Any]) -> str:
-    code = str(data.get("code") or "").strip()
-    message = str(data.get("message") or data.get("error") or "StepFun realtime ASR WebSocket error").strip()
-    return f"{code} {message}".strip()
-
-
-def _probe_tts_speech(
-    url: str,
-    *,
-    model: str,
-    voice: str,
-    audio_format: str,
-    sample_rate: int = 0,
-    api_key: str = "",
-    timeout: float,
-) -> dict[str, Any]:
-    parsed = urlsplit(url)
-    host = parsed.hostname or ""
-    normalized_format = str(audio_format or "pcm").strip().lower()
-    requested_rate = _audio_sample_rate(sample_rate)
-    body_payload = {
-        "model": model or "tts-test",
-        "input": "你好，我是 Lily 的语音测试。",
-        "voice": voice or "aura",
-        "response_format": normalized_format or "pcm",
-    }
-    if normalized_format == "pcm":
-        body_payload["sample_rate"] = requested_rate
-    body = json.dumps(body_payload, ensure_ascii=False).encode("utf-8")
-    headers = {"content-type": "application/json"}
-    secret = str(api_key or "").strip()
-    if secret:
-        headers["authorization"] = f"Bearer {secret}"
-    request = Request(url, data=body, method="POST", headers=headers)
-    started = monotonic()
-    try:
-        with urlopen(request, timeout=max(1.0, float(timeout or 4.0))) as response:
-            audio = response.read()
-            ok = 200 <= int(response.status) < 300 and bool(audio)
-            payload = {
-                "ok": ok,
-                "detail": f"HTTP {int(response.status)}; bytes={len(audio)}",
-                "endpoint_host": host,
-                "latency_ms": max(0, int((monotonic() - started) * 1000)),
-                "audio_format": normalized_format,
-                "audio_bytes": len(audio),
-                "requested_sample_rate": requested_rate if normalized_format == "pcm" else 0,
-            }
-            if ok and normalized_format == "pcm":
-                device_audio = _resample_pcm16_mono(audio, source_rate=requested_rate, target_rate=DEVICE_SAMPLE_RATE)
-                wav_bytes = _pcm_to_wav_bytes(device_audio, sample_rate=DEVICE_SAMPLE_RATE)
-                payload.update({
-                    "source_sample_rate": requested_rate,
-                    "device_sample_rate": DEVICE_SAMPLE_RATE,
-                    "resampled_for_device": requested_rate != DEVICE_SAMPLE_RATE,
-                    "device_audio_bytes": len(device_audio),
-                    "audio_mime_type": "audio/wav",
-                    "audio_data_url": "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii"),
-                })
-            return {
-                **payload,
-            }
-    except HTTPError as exc:
-        return {
-            "ok": False,
-            "detail": f"HTTP {exc.code}",
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-    except (OSError, URLError) as exc:
-        return {
-            "ok": False,
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-def _audio_sample_rate(value: int) -> int:
-    sample_rate = int(value or 0)
-    return sample_rate if sample_rate >= MIN_AUDIO_SAMPLE_RATE else DEVICE_SAMPLE_RATE
-
-
-def _pcm_to_wav_bytes(pcm: bytes, *, sample_rate: int) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm)
-    return out.getvalue()
-
-
-def _resample_pcm16_mono(pcm: bytes, *, source_rate: int, target_rate: int) -> bytes:
-    if source_rate == target_rate or not pcm:
-        return pcm
-    sample_count = len(pcm) // 2
-    if sample_count <= 1:
-        return pcm
-    samples = [int.from_bytes(pcm[i * 2:i * 2 + 2], "little", signed=True) for i in range(sample_count)]
-    target_count = max(1, int(sample_count * target_rate / source_rate))
-    out = bytearray(target_count * 2)
-    for index in range(target_count):
-        src = index * (source_rate / target_rate)
-        left = int(src)
-        right = min(left + 1, sample_count - 1)
-        frac = src - left
-        value = int(samples[left] * (1.0 - frac) + samples[right] * frac)
-        out[index * 2:index * 2 + 2] = int(value).to_bytes(2, "little", signed=True)
-    return bytes(out)
-
-
-def _tts_speech_url(base_url: str, *, provider: str = "") -> str:
-    text = str(base_url or "").strip()
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return ""
-    provider_id = str(provider or "").strip().lower()
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/audio/speech"):
-        return text
-    if provider_id in {"custom-http", "voxcpm", "voxcpm-aura"} and path:
-        return text
-    if not path:
-        path = "/v1/audio/speech"
-    elif path.endswith("/v1"):
-        path = f"{path}/audio/speech"
-    else:
-        path = f"{path}/audio/speech"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
-
-
-def _asr_transcription_url(base_url: str, *, provider: str = "") -> str:
-    text = str(base_url or "").strip()
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return ""
-    provider_id = str(provider or "").strip().lower()
-    path = (parsed.path or "").rstrip("/")
-    if (
-        path.endswith("/audio/transcriptions")
-        or path.endswith("/speech-to-text")
-        or path.endswith("/audio/asr")
-        or path.endswith("/audio/asr/sse")
-    ):
-        return text
-    if provider_id == "stepfun":
-        path = "/v1/audio/asr/sse" if not path else f"{path}/audio/asr/sse"
-    elif provider_id == "elevenlabs":
-        path = "/v1/speech-to-text" if not path else f"{path}/speech-to-text"
-    elif not path:
-        path = "/v1/audio/transcriptions"
-    elif path.endswith("/v1"):
-        path = f"{path}/audio/transcriptions"
-    else:
-        path = f"{path}/audio/transcriptions"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
-
-
-def _health_url_for(url: str) -> str:
-    parsed = urlsplit(url)
-    if not parsed.scheme or not parsed.netloc:
-        return url
-    return urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
-
-
-def _probe_http_endpoint(url: str, *, timeout: float) -> dict[str, Any]:
-    text = str(url or "").strip()
-    if not text:
-        return {"ok": False, "detail": "Base URL 为空"}
-    parsed = urlsplit(text)
-    host = parsed.hostname or ""
-    if parsed.scheme not in {"http", "https"} or not host:
-        return {"ok": False, "detail": "Base URL 需要是 http/https 地址", "endpoint_host": host}
-    request = Request(text, method="GET")
-    started = monotonic()
-    try:
-        with urlopen(request, timeout=max(1.0, float(timeout or 3.0))) as response:
-            status = int(response.status)
-            return {
-                "ok": 200 <= status < 500,
-                "detail": f"HTTP {status}",
-                "endpoint_host": host,
-                "latency_ms": max(0, int((monotonic() - started) * 1000)),
-            }
-    except HTTPError as exc:
-        return {
-            "ok": exc.code < 500,
-            "detail": f"HTTP {exc.code}",
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-    except (OSError, URLError) as exc:
-        return {
-            "ok": False,
-            "detail": _network_error_detail(exc),
-            "endpoint_host": host,
-            "latency_ms": max(0, int((monotonic() - started) * 1000)),
-        }
-
-
-def _network_error_detail(exc: BaseException) -> str:
-    reason = getattr(exc, "reason", None)
-    candidates = [reason, exc]
-    for item in candidates:
-        if isinstance(item, (TimeoutError, socket.timeout)):
-            return "connection timed out; service may be offline or unreachable from this container"
-        if isinstance(item, ConnectionRefusedError):
-            return "connection refused; host is reachable but the service port is not listening"
-    text = str(reason or exc)
-    lowered = text.lower()
-    if "timed out" in lowered or "timeout" in lowered:
-        return "connection timed out; service may be offline or unreachable from this container"
-    if "connection refused" in lowered:
-        return "connection refused; host is reachable but the service port is not listening"
-    if "no route to host" in lowered or "network is unreachable" in lowered:
-        return "network unreachable; check VPN/Tailscale/LAN route to the service host"
-    return f"{exc.__class__.__name__}: {text}"
 
 
 def render_admin_page() -> str:

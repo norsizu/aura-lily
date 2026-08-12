@@ -35,6 +35,19 @@ from integrations.hermes_lily_cli.dialogue_quota import DEFAULT_LIMIT, DEFAULT_W
 from integrations.hermes_lily_cli.local_audio import match_local_audio
 from integrations.hermes_lily_cli.quota import query_quota
 from integrations.hermes_lily_cli.runtime_config import read_hermes_provider_config, read_hermes_provider_secret
+from integrations.hermes_lily_cli.voice_providers import (
+    VoiceProviderError,
+    synthesize_aliyun_nls,
+    synthesize_baidu,
+    synthesize_minimax,
+    synthesize_tencent,
+    synthesize_volcengine,
+    transcribe_aliyun_nls,
+    transcribe_baidu,
+    transcribe_qwen3_asr,
+    transcribe_tencent,
+    transcribe_volcengine,
+)
 
 try:
     from integrations.aura_persona_gateway.config import load_persona_config
@@ -263,7 +276,7 @@ SERVER_VAD_MIN_SPEECH_MS = _env_int("AURA_SERVER_VAD_MIN_SPEECH_MS", 240, minimu
 SERVER_VAD_SILENCE_MS = _env_int("AURA_SERVER_VAD_SILENCE_MS", 900, minimum=1)
 REALTIME_LOCAL_VAD_SILENCE_MS = _env_int("AURA_REALTIME_LOCAL_VAD_SILENCE_MS", 600, minimum=100)
 SERVER_VAD_MIN_AUDIO_MS = _env_int("AURA_SERVER_VAD_MIN_AUDIO_MS", 700, minimum=1)
-GATEWAY_STATUS_PATH = os.environ.get("AURA_LILY_GATEWAY_STATUS_PATH", "/data/aura-persona/config/gateway_status.json")
+GATEWAY_STATUS_PATH = os.environ.get("AURA_LILY_GATEWAY_STATUS_PATH", ".aura/persona/config/gateway_status.json")
 GATEWAY_LOG_TRANSCRIPT_PREVIEW = _env_bool("AURA_GATEWAY_LOG_TRANSCRIPT_PREVIEW", True)
 BACKGROUND_POLL_INTERVAL_SECONDS = 1.0
 BACKGROUND_POLL_TIMEOUT_SECONDS = 90.0
@@ -2958,6 +2971,7 @@ def load_runtime_config_for_gateway() -> Any:
 # 设备端只有一台，v1 用单槽记录"当前活跃连接"；到点时用最新的连接播报。
 _ACTIVE_DEVICE_CONNECTION: dict[str, Any] = {}
 _SCHEDULED_REMINDERS: dict[str, asyncio.Task] = {}
+_SCHEDULED_REMINDER_INFO: dict[str, dict[str, Any]] = {}
 REMINDER_LATE_GRACE_SECONDS = 600.0  # 到点时设备掉线，最多等 10 分钟补播。
 REMINDER_RETRY_INTERVAL_SECONDS = 5.0
 
@@ -2999,6 +3013,7 @@ def maybe_schedule_voice_reminder(
         for task in _SCHEDULED_REMINDERS.values():
             task.cancel()
         _SCHEDULED_REMINDERS.clear()
+        _SCHEDULED_REMINDER_INFO.clear()
         log_gateway("reminder_cancel_all", cancelled=len(cancelled), reminder_ids=",".join(cancelled))
         return
     reminder_id = str(reminder.get("reminder_id") or "").strip()
@@ -3010,6 +3025,10 @@ def maybe_schedule_voice_reminder(
         return
     task = asyncio.create_task(_fire_voice_reminder(reminder_id, fire_at, announce))
     _SCHEDULED_REMINDERS[reminder_id] = task
+    _SCHEDULED_REMINDER_INFO[reminder_id] = {
+        "fire_at": fire_at,
+        "label": str(reminder.get("label") or announce).strip(),
+    }
     log_gateway(
         "reminder_scheduled",
         reminder_id=reminder_id,
@@ -3061,6 +3080,28 @@ async def _fire_voice_reminder(reminder_id: str, fire_at: float, announce: str) 
         raise
     finally:
         _SCHEDULED_REMINDERS.pop(reminder_id, None)
+        _SCHEDULED_REMINDER_INFO.pop(reminder_id, None)
+
+
+def pending_info_board_notes(*, now: float | None = None) -> list[str]:
+    """Return the next three live reminders for the device idle board."""
+
+    current = time.time() if now is None else float(now)
+    rows: list[tuple[float, str]] = []
+    for reminder in _SCHEDULED_REMINDER_INFO.values():
+        try:
+            fire_at = float(reminder.get("fire_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        label = str(reminder.get("label") or "").strip()
+        if fire_at > current and label:
+            rows.append((fire_at, label))
+    rows.sort(key=lambda row: row[0])
+    result: list[str] = []
+    for fire_at, label in rows[:3]:
+        moment = time.localtime(fire_at)
+        result.append(f"{moment.tm_mon:02d}/{moment.tm_mday:02d} {moment.tm_hour:02d}:{moment.tm_min:02d} {label}")
+    return result
 
 
 async def send_status_update(websocket: Any, runtime_config: Any) -> None:
@@ -3460,6 +3501,7 @@ def status_update_payload(runtime_config: Any, *, now: float | None = None) -> d
     # Aura 数值状态（体力/心情/饱腹/好感）——设备主界面靠它刷新。
     payload: dict[str, Any] = dict(companion_status_fields())
     payload.update(companion_world_status_fields(runtime_config, now=now))
+    payload["notes"] = pending_info_board_notes(now=now)
     with _QUOTA_CACHE_LOCK:
         aura_cached = _MODEL_QUOTA_CACHE.get(_model_quota_cache_key(runtime_config))
     aura_result = aura_cached[1] if aura_cached else None
@@ -4735,11 +4777,29 @@ def transcribe_with_local_command(runtime_config: Any, wav_bytes: bytes) -> AsrR
 
 
 def transcribe_with_api(runtime_config: Any, wav_bytes: bytes) -> AsrResult:
-    endpoint = asr_transcription_url(getattr(runtime_config, "asr_base_url", ""), provider=getattr(runtime_config, "asr_provider", ""))
+    provider = str(getattr(runtime_config, "asr_provider", "") or "").strip().lower()
+    timeout = max(1.0, float(getattr(runtime_config, "asr_timeout_seconds", 30) or 30))
+    if provider == "stepfun":
+        endpoint = asr_transcription_url(getattr(runtime_config, "asr_base_url", ""), provider=provider)
+        if not endpoint:
+            return AsrResult(ok=False, status="asr_base_url_missing", detail="ASR Base URL 为空或不是 http/https")
+        return transcribe_with_stepfun_asr(runtime_config, wav_bytes, endpoint)
+    provider_handlers = {
+        "aliyun-nls": transcribe_aliyun_nls,
+        "volcengine": transcribe_volcengine,
+        "qwen3-asr": transcribe_qwen3_asr,
+        "baidu": transcribe_baidu,
+        "tencent": transcribe_tencent,
+    }
+    if provider in provider_handlers:
+        try:
+            text = provider_handlers[provider](runtime_config, wav_bytes, timeout=timeout)
+        except VoiceProviderError as exc:
+            return AsrResult(ok=False, status="asr_api_failed", detail=str(exc)[:240])
+        return AsrResult(ok=bool(text), text=text, status="ok" if text else "empty_transcript")
+    endpoint = asr_transcription_url(getattr(runtime_config, "asr_base_url", ""), provider=provider)
     if not endpoint:
         return AsrResult(ok=False, status="asr_base_url_missing", detail="ASR Base URL 为空或不是 http/https")
-    if str(getattr(runtime_config, "asr_provider", "") or "").strip().lower() == "stepfun":
-        return transcribe_with_stepfun_asr(runtime_config, wav_bytes, endpoint)
     fields = {
         "model": getattr(runtime_config, "asr_model", "") or "whisper-1",
         "language": getattr(runtime_config, "asr_language", "") or "zh",
@@ -4909,8 +4969,10 @@ def synthesize_tts(runtime_config: Any, text: str) -> TtsResult:
     started = time.monotonic()
     if not runtime_config or not getattr(runtime_config, "tts_enabled", False):
         return TtsResult(ok=False, detail="TTS 未启用")
-    endpoint = tts_speech_url(getattr(runtime_config, "tts_base_url", ""), provider=getattr(runtime_config, "tts_provider", ""))
-    if not endpoint:
+    provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
+    provider_handlers = {"aliyun-nls", "volcengine", "baidu", "minimax", "tencent"}
+    endpoint = tts_speech_url(getattr(runtime_config, "tts_base_url", ""), provider=provider)
+    if not endpoint and provider not in provider_handlers:
         return TtsResult(ok=False, detail="TTS Base URL 为空或不是 http/https")
     chunks = tts_text_chunks(text)
     if not chunks:
@@ -4958,8 +5020,10 @@ async def synthesize_and_stream_tts(
         if not preface:
             await send_tts_failure(websocket, turn_id, result, stream_id=stream_id)
         return result
-    endpoint = tts_speech_url(getattr(runtime_config, "tts_base_url", ""), provider=getattr(runtime_config, "tts_provider", ""))
-    if not endpoint:
+    provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
+    provider_handlers = {"aliyun-nls", "volcengine", "baidu", "minimax", "tencent"}
+    endpoint = tts_speech_url(getattr(runtime_config, "tts_base_url", ""), provider=provider)
+    if not endpoint and provider not in provider_handlers:
         result = TtsResult(ok=False, detail="TTS Base URL 为空或不是 http/https", latency_ms=_elapsed_ms(started))
         if not preface:
             await send_tts_failure(websocket, turn_id, result, stream_id=stream_id)
@@ -5161,9 +5225,24 @@ async def send_tts_failure(websocket: Any, turn_id: int, result: TtsResult, *, s
 
 
 def _synthesize_tts_chunk(runtime_config: Any, endpoint: str, text: str, *, sample_rate: int) -> TtsResult:
+    provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
+    provider_handlers = {
+        "aliyun-nls": synthesize_aliyun_nls,
+        "volcengine": synthesize_volcengine,
+        "baidu": synthesize_baidu,
+        "minimax": synthesize_minimax,
+        "tencent": synthesize_tencent,
+    }
+    timeout = max(1.0, float(getattr(runtime_config, "tts_timeout_seconds", 15) or 15))
+    if provider in provider_handlers:
+        try:
+            audio = provider_handlers[provider](runtime_config, text, sample_rate=sample_rate, timeout=timeout)
+        except VoiceProviderError as exc:
+            return TtsResult(ok=False, detail=str(exc)[:240])
+        return TtsResult(ok=bool(audio), audio=audio, detail="" if audio else "empty audio")
     req = _build_tts_request(runtime_config, endpoint, text, sample_rate=sample_rate)
     try:
-        with request.urlopen(req, timeout=max(1.0, float(getattr(runtime_config, "tts_timeout_seconds", 15) or 15))) as res:
+        with request.urlopen(req, timeout=timeout) as res:
             audio = res.read()
     except HTTPError as exc:
         return TtsResult(ok=False, detail=f"HTTP {exc.code}")
@@ -6004,6 +6083,10 @@ def _stepfun_ws_source_sample_rate() -> int:
 
 def _tts_source_sample_rate(runtime_config: Any) -> int:
     sample_rate = _coerce_int(getattr(runtime_config, "tts_sample_rate", 0), 0)
+    provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
+    # NLS and Baidu PCM endpoints use documented 8/16 kHz output variants.
+    if provider in {"aliyun-nls", "baidu"}:
+        return 8_000 if sample_rate <= 8_000 else DEVICE_SAMPLE_RATE
     return sample_rate if sample_rate >= 8000 else DEVICE_SAMPLE_RATE
 
 
@@ -8380,8 +8463,6 @@ def persona_prompt_trace_payload(final_payload: dict[str, Any] | None) -> dict[s
         "aura_model_mode": str(runtime.get("aura_model_mode") or ""),
         "aura_model_provider": str(runtime.get("aura_model_provider") or ""),
         "aura_model_model": str(runtime.get("aura_model_model") or ""),
-        "aura_model_billing_scope": str(runtime.get("aura_model_billing_scope") or ""),
-        "tts_billing_scope": str(runtime.get("tts_billing_scope") or ""),
         "aura_model_route": str(runtime.get("model_route") or ""),
     }
     reasoning_effort = str(evidence.get("aura_llm_reasoning_effort") or "").strip()

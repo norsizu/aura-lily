@@ -2878,7 +2878,13 @@ static void input_task(void *arg)
 
             button_event_t boot_evt = buttons_poll_boot();
             if (boot_evt == BTN_EVENT_BOOT_SHORT) {
+                bool was_info_board = g_state.info_board_visible;
                 log_input_diag("boot_short_open_menu", state, ww_listening);
+                aura_ui_reset_idle_surface();
+                if (was_info_board) {
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                    continue;
+                }
                 s_menu_open = true;
                 s_volume_menu_open = false;
                 s_wifi_menu_open = false;
@@ -2908,6 +2914,7 @@ static void input_task(void *arg)
                  * 提前松开 → 播取消音；按满 600ms → 播开始音，再进入录音。
                  * 这样用户听到"滴"声才开口，体感与实际录音起点一致。
                  */
+                aura_ui_reset_idle_surface();
                 int64_t press_ms = esp_timer_get_time() / 1000;
                 bool hold_confirmed = false;
                 while (true) {

@@ -4,6 +4,7 @@ import base64
 import asyncio
 import json
 import re
+import sys
 from io import StringIO
 from pathlib import Path
 import subprocess
@@ -58,13 +59,8 @@ from integrations.hermes_lily_cli.quota import _normalize, _endpoint_for, _norma
 from integrations.hermes_lily_cli import server as lily_server
 from integrations.hermes_lily_cli.smoke_test import main as smoke_main
 from integrations.hermes_lily_cli.server import build_config, make_handler, parse_args
-from integrations.aura_persona_gateway.runtime import (
-    AuraRuntimeConfig,
-    asr_provider_presets,
-    load_aura_runtime_config,
-    save_aura_runtime_config,
-    voice_latency_path,
-)
+from integrations.aura_persona_gateway.runtime import AuraRuntimeConfig, load_aura_runtime_config, save_aura_runtime_config
+from integrations.hermes_lily_cli import voice_providers
 
 
 def _basic_auth(user="admin", admin_pass="unit-pass"):
@@ -630,7 +626,8 @@ def test_lily_http_admin_page_loads():
         assert "testTts" in html
         assert "ttsTimeout" in html
         assert "testAsr" in html
-        assert "copyStepPlanKeyToAsr" in html
+        assert "ttsProviderOptions" in html
+        assert "asrProviderOptions" in html
         assert "asrProfile" in html
         assert "saveAsrProfile" in html
         assert "ttsProfile" in html
@@ -689,35 +686,14 @@ def test_lily_http_admin_page_loads():
         assert "applyTtsProfile" in js
         assert "stage: ${payload.stage}" in js
         assert "preset.description" in js
-        assert "实时流式" in js
-        assert "voice_latency_path" in js
+        assert "Provider Options" in js
+        assert "parseProviderOptions" in js
         assert "aura_model_max_tokens" in js
         assert "aura_model_reasoning_effort" in js
-        assert "小智式 ASR/LLM/TTS 三段流式已就绪" in js
-        assert "Step Plan 订阅内" in js
-        assert "非 Step Plan 路由" in js
-        assert "step_plan_covered" in js
-        assert "step_plan_realtime_ready" in js
-        assert "step_plan_realtime_configured" in js
-        assert "applyStepPlanRealtime" in html
-        assert "套用实验 Realtime" in html
-        assert "applyStepPlanRealtimePreset" in js
-        assert "applyStepPlanAsr" in html
-        assert "套用 Plan ASR" in html
-        assert "applyStepPlanAsrPreset" in js
-        assert "copyStepPlanKeyToAsr" in js
-        assert "/admin/aura/copy-stepfun-plan-key" in js
-        assert "/admin/aura/apply-stepfun-open-platform" in js
-        assert "applyStepfunOpenPlatform" in html
-        assert "套用 Open Platform 流式" in html
-        assert "applyStepfunOpenPlatformPreset" in js
-        assert "非 Step Plan 路由" in js
-        assert "applyXiaozhiAsr" in html
-        assert "套用语义流式" in html
-        assert "applyXiaozhiAsrPreset" in js
-        assert "stepaudio-2.5-asr" in js
-        assert "stepaudio-2.5-asr-stream" in js
-        assert "已套用小智式语义流式" in js
+        assert "copyStepPlanKeyToAsr" not in html
+        assert "applyStepPlanRealtime" not in html
+        assert "/admin/aura/copy-stepfun-plan-key" not in js
+        assert "/admin/aura/apply-stepfun-open-platform" not in js
         assert "/admin/hermes/secret/api_key" in js
         assert "/admin/aura/secret/aura_model_api_key" in js
         assert "/admin/aura/secret/asr_api_key" in js
@@ -860,16 +836,6 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
         return FakeWeatherResponse()
 
     monkeypatch.setattr("integrations.aura_persona_gateway.weather.urlopen", fake_weather_urlopen)
-    monkeypatch.setattr(
-        lily_server,
-        "_probe_stepfun_realtime_asr_ws",
-        lambda base_url, *, model, language, api_key, timeout: {
-            "ok": True,
-            "stage": "stepfun_realtime_ws",
-            "detail": "StepFun realtime ASR WebSocket reachable.",
-            "endpoint_host": "api.stepfun.com",
-        },
-    )
     monkeypatch.setenv("AURA_LILY_ADMIN_PASSWORD", "unit-pass")
     monkeypatch.setenv("AURA_PERSONA_HOME", str(tmp_path / "persona-home"))
     monkeypatch.setenv("AURA_COMPANION_HOME", str(tmp_path / "companion-home"))
@@ -978,8 +944,6 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
         assert payload["config"]["weather_refresh_interval_seconds"] == 1200
         assert payload["config"]["weather_request_timeout_seconds"] == 4
         assert any(item["kind"] == "asr" and item["model"] == "gpt-4o-transcribe" for item in payload["config"]["config_history"])
-        assert any(item["id"] == "asr-stepfun-plan-realtime" for item in payload["config"]["asr_profiles"])
-        assert any(item["id"] == "asr-stepfun-plan-sse" for item in payload["config"]["asr_profiles"])
         assert any(item["id"] == "asr-local-whisper-http" for item in payload["config"]["asr_profiles"])
         assert payload["config"]["tts_profiles"] == []
         assert "aura-unit-key" not in json.dumps(payload)
@@ -1014,126 +978,6 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
         tts_secret = json.loads(urlopen(tts_secret_req, timeout=3).read().decode("utf-8"))
         assert tts_secret == {"ok": True, "key": "tts_api_key", "value": "tts-secret"}
 
-        stepfun_plan_req = Request(
-            f"{base}/admin/aura/runtime",
-            data=json.dumps({
-                "aura_model_provider": "stepfun",
-                "aura_model_model": "stepaudio-2.5-chat",
-                "aura_model_base_url": "https://api.stepfun.com/step_plan/v1",
-                "aura_model_api_key": "step-plan-secret",
-                "tts_enabled": True,
-                "tts_provider": "stepfun",
-                "tts_model": "stepaudio-2.5-tts",
-                "tts_base_url": "https://api.stepfun.com/step_plan/v1",
-                "tts_api_key": "",
-            }).encode("utf-8"),
-            headers={"content-type": "application/json", **_basic_auth()},
-            method="POST",
-        )
-        stepfun_plan_payload = json.loads(urlopen(stepfun_plan_req, timeout=3).read().decode("utf-8"))
-        assert stepfun_plan_payload["ok"] is True
-        assert stepfun_plan_payload["config"]["aura_model_provider"] == "stepfun"
-        assert "step-plan-secret" not in json.dumps(stepfun_plan_payload)
-
-        copy_key_req = Request(
-            f"{base}/admin/aura/copy-stepfun-plan-key",
-            headers=_basic_auth(),
-        )
-        copy_key_payload = json.loads(urlopen(copy_key_req, timeout=3).read().decode("utf-8"))
-        assert copy_key_payload["ok"] is True
-        assert copy_key_payload["source"] == "Aura LLM"
-        assert copy_key_payload["config"]["asr_provider"] == "stepfun"
-        assert copy_key_payload["config"]["asr_model"] == "stepaudio-2.5-asr"
-        assert copy_key_payload["config"]["asr_base_url"] == "https://api.stepfun.com/step_plan/v1"
-        assert copy_key_payload["config"]["asr_api_key_configured"] is True
-        assert "aura-unit-key" not in json.dumps(copy_key_payload)
-        assert "step-plan-secret" not in json.dumps(copy_key_payload)
-        assert "tts-secret" not in json.dumps(copy_key_payload)
-
-        asr_secret_req = Request(
-            f"{base}/admin/aura/secret/asr_api_key",
-            headers=_basic_auth(),
-        )
-        asr_secret = json.loads(urlopen(asr_secret_req, timeout=3).read().decode("utf-8"))
-        assert asr_secret == {"ok": True, "key": "asr_api_key", "value": "step-plan-secret"}
-
-        stepfun_plan_asr_req = Request(
-            f"{base}/admin/aura/runtime",
-            data=json.dumps({
-                "asr_enabled": True,
-                "asr_mode": "api",
-                "asr_provider": "stepfun",
-                "asr_model": "stepaudio-2.5-asr",
-                "asr_base_url": "https://api.stepfun.com/step_plan/v1",
-                "clear_asr_api_key": True,
-            }).encode("utf-8"),
-            headers={"content-type": "application/json", **_basic_auth()},
-            method="POST",
-        )
-        stepfun_plan_asr_payload = json.loads(urlopen(stepfun_plan_asr_req, timeout=3).read().decode("utf-8"))
-        assert stepfun_plan_asr_payload["ok"] is True
-        assert stepfun_plan_asr_payload["config"]["asr_api_key_configured"] is False
-        copy_key_again_payload = json.loads(urlopen(copy_key_req, timeout=3).read().decode("utf-8"))
-        assert copy_key_again_payload["ok"] is True
-        assert copy_key_again_payload["config"]["asr_provider"] == "stepfun"
-        assert copy_key_again_payload["config"]["asr_model"] == "stepaudio-2.5-asr"
-        assert copy_key_again_payload["config"]["asr_base_url"] == "https://api.stepfun.com/step_plan/v1"
-        assert copy_key_again_payload["config"]["asr_api_key_configured"] is True
-
-        open_platform_req = Request(
-            f"{base}/admin/aura/apply-stepfun-open-platform",
-            headers=_basic_auth(),
-        )
-        open_platform_payload = json.loads(urlopen(open_platform_req, timeout=3).read().decode("utf-8"))
-        assert open_platform_payload["ok"] is True
-        assert open_platform_payload["source"] == "Aura LLM"
-        assert open_platform_payload["billing_scope"] == "open_platform"
-        assert open_platform_payload["config"]["aura_model_provider"] == "stepfun"
-        assert open_platform_payload["config"]["aura_model_base_url"] == "https://api.stepfun.com/v1"
-        assert open_platform_payload["config"]["aura_model_model"] == "stepaudio-2.5-chat"
-        assert open_platform_payload["config"]["aura_model_reasoning_effort"] == ""
-        assert open_platform_payload["config"]["tts_base_url"] == "https://api.stepfun.com/v1"
-        assert open_platform_payload["config"]["asr_base_url"] == "https://api.stepfun.com/v1"
-        assert open_platform_payload["config"]["asr_model"] == "stepaudio-2.5-asr-stream"
-        assert open_platform_payload["config"]["voice_latency_path"]["llm_billing_scope"] == "open_platform"
-        assert open_platform_payload["config"]["voice_latency_path"]["tts_billing_scope"] == "open_platform"
-        assert open_platform_payload["config"]["voice_latency_path"]["asr_billing_scope"] == "open_platform"
-        assert open_platform_payload["config"]["voice_latency_path"]["semantic_stream_ready"] is True
-        assert open_platform_payload["config"]["voice_latency_path"]["step_plan_covered"] is False
-        assert "step-plan-secret" not in json.dumps(open_platform_payload)
-
-        xiaozhi_asr_request = Request(
-            f"{base}/admin/aura/runtime",
-            data=json.dumps({
-                "asr_enabled": True,
-                "asr_mode": "api",
-                "asr_provider": "stepfun",
-                "asr_model": "stepaudio-2.5-asr-stream",
-                "asr_base_url": "https://api.stepfun.com/v1",
-                "asr_api_key": "",
-            }).encode("utf-8"),
-            headers={"content-type": "application/json", **_basic_auth()},
-            method="POST",
-        )
-        xiaozhi_asr_payload = json.loads(urlopen(xiaozhi_asr_request, timeout=3).read().decode("utf-8"))
-        assert xiaozhi_asr_payload["ok"] is True
-        assert xiaozhi_asr_payload["config"]["asr_provider"] == "stepfun"
-        assert xiaozhi_asr_payload["config"]["asr_model"] == "stepaudio-2.5-asr-stream"
-        assert xiaozhi_asr_payload["config"]["asr_api_key_configured"] is True
-        assert xiaozhi_asr_payload["config"]["voice_latency_path"]["asr_streaming"] is True
-        asr_secret_after_preset = json.loads(urlopen(asr_secret_req, timeout=3).read().decode("utf-8"))
-        assert asr_secret_after_preset == {"ok": True, "key": "asr_api_key", "value": "step-plan-secret"}
-        assert "asr-secret" not in json.dumps(xiaozhi_asr_payload)
-        assert "step-plan-secret" not in json.dumps(xiaozhi_asr_payload)
-
-        realtime_asr_req = Request(f"{base}/admin/test/asr", headers=_basic_auth())
-        realtime_asr_test = json.loads(urlopen(realtime_asr_req, timeout=3).read().decode("utf-8"))
-        assert realtime_asr_test["ok"] is True
-        assert realtime_asr_test["stage"] == "stepfun_realtime_ws"
-        assert realtime_asr_test["endpoint_host"] == "api.stepfun.com"
-        assert "asr-secret" not in json.dumps(realtime_asr_test)
-        assert "step-plan-secret" not in json.dumps(realtime_asr_test)
-
         restore_non_secret_fields = Request(
             f"{base}/admin/aura/runtime",
             data=json.dumps({
@@ -1143,9 +987,9 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
                 "tts_provider": "openai",
                 "tts_model": "gpt-4o-mini-tts",
                 "tts_voice": "verse",
-                "asr_provider": "stepfun",
-                "asr_model": "stepaudio-2.5-asr-stream",
-                "asr_base_url": "https://api.stepfun.com/v1",
+                "asr_provider": "openai",
+                "asr_model": "gpt-4o-transcribe",
+                "asr_base_url": "https://api.openai.com/v1",
             }).encode("utf-8"),
             headers={"content-type": "application/json", **_basic_auth()},
             method="POST",
@@ -1206,8 +1050,8 @@ def test_lily_http_admin_updates_aura_runtime_config(tmp_path, monkeypatch):
         assert disabled_world["world"]["today_plan"] == []
         assert summary["aura_runtime"]["tts_provider"] == "openai"
         assert summary["aura_runtime"]["tts_api_key_configured"] is False
-        assert summary["aura_runtime"]["asr_provider"] == "stepfun"
-        assert summary["aura_runtime"]["asr_model"] == "stepaudio-2.5-asr-stream"
+        assert summary["aura_runtime"]["asr_provider"] == "openai"
+        assert summary["aura_runtime"]["asr_model"] == "gpt-4o-transcribe"
         assert summary["aura_runtime"]["asr_api_key_configured"] is False
         assert "aura-unit-key" not in json.dumps(summary)
         assert "asr-secret" not in json.dumps(summary)
@@ -1300,23 +1144,14 @@ def test_provider_presets_follow_hermes_catalog():
     assert "kimi-coding-cn" not in by_id
 
 
-def test_tts_presets_include_self_hosted_voxcpm_and_stepfun(tmp_path):
+def test_tts_presets_include_cloud_pool_and_self_hosted_fallback(tmp_path):
     config = AuraRuntimeConfig(persona_home=str(tmp_path / "persona-home"))
     public = config.public_dict()
     presets = {item["id"]: item for item in public["tts_provider_presets"]}
 
-    assert presets["stepfun-open-platform"]["provider"] == "stepfun"
-    assert presets["stepfun-open-platform"]["base_url"] == "https://api.stepfun.com/v1"
-    assert presets["stepfun-open-platform"]["billing_scope"] == "open_platform"
-    assert presets["stepfun-open-platform"]["streaming"] is True
-    assert presets["stepfun-step-plan"]["provider"] == "stepfun"
-    assert presets["stepfun-step-plan"]["base_url"] == "https://api.stepfun.com/step_plan/v1"
-    assert presets["stepfun-step-plan"]["billing_scope"] == "step_plan"
-    assert presets["stepfun-step-plan"]["models"] == ["stepaudio-2.5-tts"]
-    assert presets["stepfun-step-plan"]["route"] == "step_plan_ws_tts"
-    assert presets["stepfun-step-plan"]["streaming"] is True
-    assert "WebSocket" in presets["stepfun-step-plan"]["description"]
-    assert "active Step Plan" in presets["stepfun-step-plan"]["description"]
+    for provider_id in {"aliyun-nls", "volcengine", "baidu", "minimax", "tencent"}:
+        assert provider_id in presets
+        assert presets[provider_id]["group"] == "国内云服务"
     assert presets["voxcpm"]["provider"] == "voxcpm"
     assert presets["voxcpm"]["base_url"] == ""
     assert presets["voxcpm"]["voices"] == []
@@ -1324,517 +1159,228 @@ def test_tts_presets_include_self_hosted_voxcpm_and_stepfun(tmp_path):
     assert presets["custom-http"]["requires_base_url"] is True
 
 
-def test_tts_probe_reports_health_timeout(monkeypatch):
-    def fake_urlopen(_request, timeout):
-        raise TimeoutError("timed out")
+def test_asr_presets_include_cloud_pool_and_qwen3(tmp_path):
+    config = AuraRuntimeConfig(persona_home=str(tmp_path / "persona-home"))
+    presets = {item["id"]: item for item in config.public_dict()["asr_provider_presets"]}
 
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_tts_endpoint(
-        "http://tts.example.test/v1/audio/speech",
-        provider="voxcpm",
-        model="voxcpm2",
-        voice="aura",
-        audio_format="pcm",
-        timeout=1.0,
-    )
-
-    assert payload["ok"] is False
-    assert payload["stage"] == "health"
-    assert payload["endpoint_host"] == "tts.example.test"
-    assert "TTS health check failed" in payload["detail"]
-    assert "service may be offline" in payload["detail"]
+    for provider_id in {"aliyun-nls", "volcengine", "qwen3-asr", "baidu", "tencent"}:
+        assert provider_id in presets
+        assert presets[provider_id]["group"] == "国内云服务"
+        assert presets[provider_id]["mode"] == "api"
+    assert presets["local-whisper"]["mode"] == "local"
 
 
-def test_asr_probe_uses_local_health_endpoint(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        return FakeResponse()
-
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_asr_endpoint(
-        "http://127.0.0.1:8766/v1",
-        provider="custom",
-        timeout=3.0,
-    )
-
-    assert payload["ok"] is True
-    assert payload["stage"] == "health"
-    assert captured["url"] == "http://127.0.0.1:8766/health"
-
-
-def test_asr_probe_accepts_transcription_endpoint_method_errors(monkeypatch):
-    def fake_urlopen(_request, timeout):
-        raise HTTPError(
-            "https://api.openai.com/v1/audio/transcriptions",
-            405,
-            "method not allowed",
-            hdrs=None,
-            fp=None,
-        )
-
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_asr_endpoint(
-        "https://api.openai.com/v1",
-        provider="openai",
-        timeout=3.0,
-    )
-
-    assert payload["ok"] is True
-    assert payload["stage"] == "transcriptions"
-    assert payload["endpoint_host"] == "api.openai.com"
-
-
-def test_stepfun_asr_presets_describe_step_plan_and_realtime_routes():
-    presets = {item["id"]: item for item in asr_provider_presets()}
-
-    assert presets["stepfun-step-plan"]["route"] == "step_plan_sse"
-    assert presets["stepfun-step-plan"]["streaming"] is False
-    assert presets["stepfun-step-plan"]["billing_scope"] == "step_plan"
-    assert presets["stepfun-step-plan"]["recommended"] is True
-    assert "/step_plan/v1" in presets["stepfun-step-plan"]["base_url"]
-    assert "HTTP+SSE" in presets["stepfun-step-plan"]["description"]
-    assert "订阅内" in presets["stepfun-step-plan"]["label"]
-    assert presets["stepfun-stream"]["route"] == "realtime_ws"
-    assert presets["stepfun-stream"]["streaming"] is True
-    assert presets["stepfun-stream"]["billing_scope"] == "open_platform"
-    assert presets["stepfun-stream"]["recommended"] is True
-    assert presets["stepfun-stream"]["base_url"] == "https://api.stepfun.com/v1"
-    assert "Aura/Lily 语义链" in presets["stepfun-stream"]["description"]
-    assert presets["stepfun-step-plan-realtime"]["route"] == "step_plan_realtime_ws"
-    assert presets["stepfun-step-plan-realtime"]["provider"] == "stepfun-realtime"
-    assert presets["stepfun-step-plan-realtime"]["streaming"] is True
-    assert presets["stepfun-step-plan-realtime"]["billing_scope"] == "step_plan"
-    assert presets["stepfun-step-plan-realtime"]["recommended"] is False
-    assert presets["stepfun-step-plan-realtime"]["base_url"] == "https://api.stepfun.com/step_plan/v1"
-    assert presets["stepfun-step-plan-realtime"]["models"] == ["stepaudio-2.5-realtime"]
-    assert "绕过 Aura/Lily" in presets["stepfun-step-plan-realtime"]["description"]
-
-
-def test_admin_asr_test_refreshes_runtime_config_from_disk(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_PERSONA_HOME", str(tmp_path / "persona-home"))
-    monkeypatch.setenv("AURA_COMPANION_HOME", str(tmp_path / "companion-home"))
-    monkeypatch.setenv("AURA_LILY_AURA_RUNTIME_CONFIG_PATH", str(tmp_path / "aura_runtime.json"))
-
-    runtime = lily_server.LilyRuntime(build_config(parse_args(["--hermes-home", str(tmp_path / "hermes-home")])))
-    assert runtime.aura_runtime_config
-    assert runtime.aura_runtime_config.asr_provider != "stepfun-realtime"
-
-    saved = save_aura_runtime_config(load_aura_runtime_config(persona_home=str(tmp_path / "persona-home")), {
-        "asr_enabled": True,
-        "asr_mode": "api",
-        "asr_provider": "stepfun-realtime",
-        "asr_model": "stepaudio-2.5-realtime",
-        "asr_base_url": "https://api.stepfun.com/step_plan/v1",
-        "asr_api_key": "step-plan-secret",
-    })
-    assert saved.asr_provider == "stepfun-realtime"
-
-    monkeypatch.setattr(
-        lily_server,
-        "_probe_stepfun_step_plan_realtime_ws",
-        lambda base_url, *, model, api_key, timeout: {
-            "ok": True,
-            "stage": "stepfun_step_plan_realtime_ws",
-            "detail": "StepFun Step Plan Realtime WebSocket reachable.",
-            "endpoint_host": "api.stepfun.com",
+def test_provider_option_secrets_are_masked_preserved_and_not_profile_data(tmp_path):
+    config = AuraRuntimeConfig(
+        persona_home=str(tmp_path / "persona-home"),
+        tts_enabled=True,
+        tts_provider="tencent",
+        tts_model="tencent-tts",
+        tts_voice="101001",
+        tts_provider_options={
+            "secret_id": "tts-id",
+            "secret_key": "tts-secret",
+            "region": "ap-shanghai",
         },
-    )
-
-    payload = runtime.test_asr()
-
-    assert payload["ok"] is True
-    assert payload["provider"] == "stepfun-realtime"
-    assert payload["model"] == "stepaudio-2.5-realtime"
-    assert payload["stage"] == "stepfun_step_plan_realtime_ws"
-    assert runtime.aura_runtime_config.asr_provider == "stepfun-realtime"
-    assert "step-plan-secret" not in json.dumps(payload)
-
-
-def test_voice_latency_path_distinguishes_step_plan_sse_from_realtime(tmp_path, monkeypatch):
-    realtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        aura_model_mode="aura_model",
         asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun",
-        asr_model="stepaudio-2.5-asr-stream",
-        asr_base_url="https://api.stepfun.com/v1",
-        asr_api_key="asr-key",
-        tts_enabled=True,
-        tts_provider="stepfun",
-        tts_model="stepaudio-2.5-tts",
-        tts_base_url="https://api.stepfun.com/step_plan/v1",
-        tts_api_key="tts-key",
-    )
-    step_plan_sse = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun",
-        asr_model="stepaudio-2.5-asr",
-        asr_base_url="https://api.stepfun.com/step_plan/v1",
-        asr_api_key="asr-key",
-        tts_enabled=True,
-        tts_provider="stepfun",
-        tts_model="stepaudio-2.5-tts",
-        tts_base_url="https://api.stepfun.com/step_plan/v1",
-        tts_api_key="tts-key",
-    )
-    step_plan_sse_without_asr_key = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun",
-        asr_model="stepaudio-2.5-asr",
-        asr_base_url="https://api.stepfun.com/step_plan/v1",
-        asr_api_key="",
-        tts_enabled=True,
-        tts_provider="stepfun",
-        tts_model="stepaudio-2.5-tts",
-        tts_base_url="https://api.stepfun.com/step_plan/v1",
-        tts_api_key="tts-key",
-    )
-    step_plan_realtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        aura_model_mode="aura_model",
-        asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun-realtime",
-        asr_model="stepaudio-2.5-realtime",
-        asr_base_url="https://api.stepfun.com/step_plan/v1",
-        asr_api_key="realtime-key",
+        asr_provider="baidu",
+        asr_model="baidu-asr",
+        asr_provider_options={"client_id": "asr-id", "client_secret": "asr-secret"},
     )
 
-    realtime_path = voice_latency_path(realtime)
-    assert realtime_path["xiaozhi_style_ready"] is True
-    assert realtime_path["asr_streaming"] is True
-    assert realtime_path["tts_streaming"] is True
-    assert realtime_path["llm_streaming"] is True
-    assert realtime_path["asr_billing_scope"] == "open_platform"
-    assert realtime_path["tts_billing_scope"] == "step_plan"
-    assert realtime_path["step_plan_covered"] is False
-    assert realtime_path["asr_label"] == "StepFun 实时 WS ASR"
+    public = config.public_dict()
+    rendered = json.dumps(public, ensure_ascii=False)
+    assert "tts-secret" not in rendered
+    assert "asr-secret" not in rendered
+    assert public["tts_provider_options"]["secret_key"] == "configured"
+    assert public["asr_provider_options"]["client_secret"] == "configured"
+    assert public["tts_provider_options"]["region"] == "ap-shanghai"
+    assert all("provider_options" not in item for item in public["tts_profiles"])
+    assert all("provider_options" not in item for item in public["asr_profiles"])
 
-    step_plan_path = voice_latency_path(step_plan_sse)
-    assert step_plan_path["xiaozhi_style_ready"] is False
-    assert step_plan_path["asr_step_plan_sse"] is True
-    assert step_plan_path["asr_streaming"] is False
-    assert step_plan_path["tts_streaming"] is True
-    assert step_plan_path["asr_label"] == "StepFun Step Plan SSE ASR"
-    assert step_plan_path["llm_step_plan"] is True
-    assert step_plan_path["tts_step_plan"] is True
-    assert step_plan_path["step_plan_covered"] is True
-    assert step_plan_path["asr_billing_scope"] == "step_plan"
-    assert step_plan_path["llm_billing_scope"] == "step_plan"
-    assert step_plan_path["tts_billing_scope"] == "step_plan"
-    assert "录音结束后 SSE 转写" in step_plan_path["step_plan_summary"]
-
-    open_platform = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_base_url="https://api.stepfun.com/v1",
-        asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun",
-        asr_model="stepaudio-2.5-asr-stream",
-        asr_base_url="https://api.stepfun.com/v1",
-        asr_api_key="asr-key",
-        tts_enabled=True,
-        tts_provider="stepfun",
-        tts_model="stepaudio-2.5-tts",
-        tts_base_url="https://api.stepfun.com/v1",
-        tts_api_key="tts-key",
-    )
-    open_platform_path = voice_latency_path(open_platform)
-    assert open_platform_path["xiaozhi_style_ready"] is True
-    assert open_platform_path["semantic_stream_ready"] is True
-    assert open_platform_path["step_plan_covered"] is False
-    assert open_platform_path["llm_step_plan"] is False
-    assert open_platform_path["tts_step_plan"] is False
-    assert open_platform_path["asr_billing_scope"] == "open_platform"
-    assert open_platform_path["llm_billing_scope"] == "open_platform"
-    assert open_platform_path["tts_billing_scope"] == "open_platform"
-    assert open_platform_path["tts_label"] == "StepFun Open Platform WS TTS"
-
-    missing_key_path = voice_latency_path(step_plan_sse_without_asr_key)
-    assert missing_key_path["asr_step_plan_sse"] is False
-    assert missing_key_path["step_plan_covered"] is False
-    assert "优先配置 Step Plan ASR SSE" in missing_key_path["step_plan_summary"]
-
-    realtime_plan_path = voice_latency_path(step_plan_realtime)
-    assert realtime_plan_path["xiaozhi_style_ready"] is False
-    assert realtime_plan_path["step_plan_realtime_ready"] is False
-    assert realtime_plan_path["step_plan_realtime_configured"] is True
-    assert realtime_plan_path["step_plan_realtime_direct_enabled"] is False
-    assert realtime_plan_path["asr_step_plan_realtime"] is True
-    assert realtime_plan_path["asr_step_plan_realtime_direct"] is False
-    assert realtime_plan_path["asr_streaming"] is False
-    assert realtime_plan_path["asr_label"] == "StepFun Step Plan Realtime (实验直连未启用)"
-    assert "默认不启用直连" in realtime_plan_path["step_plan_summary"]
-    assert "不会绕过 Aura/Lily" in realtime_plan_path["step_plan_summary"]
-
-    monkeypatch.setenv("AURA_STEPFUN_REALTIME_DIRECT_REPLY_ENABLED", "1")
-    direct_path = voice_latency_path(step_plan_realtime)
-    assert direct_path["xiaozhi_style_ready"] is True
-    assert direct_path["step_plan_realtime_ready"] is True
-    assert direct_path["step_plan_realtime_direct_enabled"] is True
-    assert direct_path["asr_step_plan_realtime_direct"] is True
-    assert direct_path["asr_label"] == "StepFun Step Plan Realtime 直连"
-    assert "实验直连" in direct_path["summary"]
-    assert "绕过 Aura/Lily" in direct_path["step_plan_summary"]
+    saved = save_aura_runtime_config(config, {
+        "tts_provider_options": {"secret_id": "configured", "secret_key": "configured", "region": "ap-beijing"},
+        "asr_provider_options": {"client_id": "configured", "client_secret": "configured"},
+    })
+    assert saved.tts_provider_options["secret_id"] == "tts-id"
+    assert saved.tts_provider_options["secret_key"] == "tts-secret"
+    assert saved.tts_provider_options["region"] == "ap-beijing"
+    assert saved.asr_provider_options["client_secret"] == "asr-secret"
 
 
-def test_asr_probe_uses_stepfun_sse_endpoint(monkeypatch):
+def test_aliyun_nls_asr_request_uses_pcm_and_token(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        status = 405
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = req.data
+        captured["timeout"] = timeout
+        return b'{"status":20000000,"result":"  hello  "}'
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        raise HTTPError(request.full_url, 405, "method not allowed", hdrs=None, fp=None)
-
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_asr_endpoint(
-        "https://api.stepfun.com/step_plan/v1",
-        provider="stepfun",
-        timeout=3.0,
+    monkeypatch.setattr(voice_providers, "_urlopen", fake_urlopen)
+    runtime = AuraRuntimeConfig(
+        asr_base_url="https://nls.example.test/ignored",
+        asr_api_key="fallback-token",
+        asr_provider_options={"appkey": "app-key", "token": "option-token"},
     )
 
-    assert payload["ok"] is True
-    assert payload["stage"] == "stepfun_sse"
-    assert payload["detail"] == "StepFun ASR SSE endpoint reachable."
-    assert captured["url"] == "https://api.stepfun.com/step_plan/v1/audio/asr/sse"
+    assert voice_providers.transcribe_aliyun_nls(runtime, b"RIFF" + b"x" * 40 + b"data" + (4).to_bytes(4, "little") + b"PCM!", timeout=4) == "hello"
+    assert captured["url"].startswith("https://nls.example.test/stream/v1/asr?")
+    assert "appkey=app-key" in captured["url"]
+    assert captured["headers"]["X-nls-token"] == "option-token"
+    assert captured["body"] == b"PCM!"
+    assert captured["timeout"] == 4
 
 
-def test_stepfun_realtime_asr_probe_requires_key():
-    payload = lily_server._probe_stepfun_realtime_asr_ws(
-        "https://api.stepfun.com/v1",
-        model="stepaudio-2.5-asr-stream",
-        language="zh",
-        api_key="",
-        timeout=3.0,
-    )
-
-    assert payload["ok"] is False
-    assert payload["stage"] == "stepfun_realtime_ws"
-    assert payload["endpoint_host"] == "api.stepfun.com"
-    assert "API Key 未配置" in payload["detail"]
-
-
-def test_stepfun_realtime_asr_probe_uses_ws_session_update(monkeypatch):
+def test_volcengine_asr_protocol_frames_and_result(monkeypatch):
     sent = []
     captured = {}
 
-    class FakeStepfunWs:
-        async def send(self, payload):
-            sent.append(json.loads(payload))
+    def volc_packet(payload):
+        raw = voice_providers.gzip.compress(json.dumps(payload).encode("utf-8"))
+        return bytes([0x11, 0x91, 0x11, 0]) + len(raw).to_bytes(4, "big") + raw
 
-        async def recv(self):
-            return json.dumps({"type": "session.updated"})
+    class FakeSocket:
+        def send(self, payload):
+            sent.append(bytes(payload))
 
-    class FakeConnect:
-        def __init__(self, url, **kwargs):
-            captured["url"] = url
-            captured["headers"] = kwargs.get("additional_headers") or {}
-
-        async def __aenter__(self):
-            return FakeStepfunWs()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(lily_server, "ws_connect", lambda url, **kwargs: FakeConnect(url, **kwargs))
-
-    payload = lily_server._probe_stepfun_realtime_asr_ws(
-        "https://api.stepfun.com/v1",
-        model="stepaudio-2.5-asr-stream",
-        language="zh",
-        api_key="stepfun-unit-key",
-        timeout=3.0,
-    )
-
-    assert payload["ok"] is True
-    assert payload["stage"] == "stepfun_realtime_ws"
-    assert payload["endpoint_host"] == "api.stepfun.com"
-    assert "WebSocket reachable" in payload["detail"]
-    assert captured["url"] == "wss://api.stepfun.com/v1/realtime/asr/stream"
-    assert captured["headers"]["Authorization"] == "Bearer stepfun-unit-key"
-    assert sent[0]["type"] == "session.update"
-    input_config = sent[0]["session"]["audio"]["input"]
-    assert input_config["format"]["rate"] == lily_server.DEVICE_SAMPLE_RATE
-    assert input_config["transcription"]["model"] == "stepaudio-2.5-asr-stream"
-    assert input_config["turn_detection"]["type"] == "server_vad"
-
-
-def test_stepfun_step_plan_realtime_probe_uses_session_update(monkeypatch):
-    sent = []
-    captured = {}
-
-    class FakeStepfunWs:
-        async def send(self, payload):
-            sent.append(json.loads(payload))
-
-        async def recv(self):
-            return json.dumps({"type": "session.updated"})
+        def recv(self):
+            return volc_packet({"code": 1000, "result": [{"text": "火山结果"}]})
 
     class FakeConnect:
-        def __init__(self, url, **kwargs):
-            captured["url"] = url
-            captured["headers"] = kwargs.get("additional_headers") or {}
-
-        async def __aenter__(self):
-            return FakeStepfunWs()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(lily_server, "ws_connect", lambda url, **kwargs: FakeConnect(url, **kwargs))
-
-    payload = lily_server._probe_stepfun_step_plan_realtime_ws(
-        "https://api.stepfun.com/step_plan/v1",
-        model="stepaudio-2.5-realtime",
-        api_key="stepfun-unit-key",
-        timeout=3.0,
-    )
-
-    assert payload["ok"] is True
-    assert payload["stage"] == "stepfun_step_plan_realtime_ws"
-    assert payload["endpoint_host"] == "api.stepfun.com"
-    assert "WebSocket reachable" in payload["detail"]
-    assert captured["url"] == "wss://api.stepfun.com/step_plan/v1/realtime?model=stepaudio-2.5-realtime"
-    assert captured["headers"]["Authorization"] == "Bearer stepfun-unit-key"
-    assert sent[0]["type"] == "session.update"
-    assert sent[0]["session"]["modalities"] == ["text", "audio"]
-    assert "voice" not in sent[0]["session"]
-    assert sent[0]["session"]["input_audio_format"] == "pcm16"
-    assert sent[0]["session"]["output_audio_format"] == "pcm16"
-    assert sent[0]["session"]["turn_detection"]["type"] == "server_vad"
-    assert sent[0]["session"]["turn_detection"]["prefix_padding_ms"] == 500
-    assert sent[0]["session"]["turn_detection"]["energy_awakeness_threshold"] == 2500
-
-
-def test_tts_probe_uses_speech_endpoint_and_api_key(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        status = 200
-
         def __enter__(self):
-            return self
+            return FakeSocket()
 
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self, _size=-1):
-            return b"audio"
+    def fake_connect(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs["additional_headers"]
+        return FakeConnect()
 
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["authorization"] = request.get_header("Authorization")
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_tts_endpoint(
-        "https://api.example.com/v1",
-        provider="openai",
-        model="gpt-4o-mini-tts",
-        voice="alloy",
-        api_key="tts-secret",
-        audio_format="mp3",
-        timeout=2.0,
+    monkeypatch.setattr(voice_providers, "sync_ws_connect", fake_connect)
+    runtime = AuraRuntimeConfig(
+        asr_language="ja",
+        asr_provider_options={"appid": "app-id", "cluster": "cluster", "access_token": "access-token"},
     )
 
-    assert payload["ok"] is True
-    assert payload["stage"] == "speech"
-    assert captured["url"] == "https://api.example.com/v1/audio/speech"
-    assert captured["authorization"] == "Bearer tts-secret"
-    assert captured["body"]["model"] == "gpt-4o-mini-tts"
-    assert captured["body"]["voice"] == "alloy"
-    assert captured["body"]["response_format"] == "mp3"
+    assert voice_providers.transcribe_volcengine(runtime, b"pcm", timeout=3) == "火山结果"
+    assert captured["url"] == voice_providers.VOLCENGINE_ASR_URL
+    assert captured["headers"] == {"Authorization": "Bearer; access-token"}
+    request_body = voice_providers.gzip.decompress(sent[0][8:])
+    request_payload = json.loads(request_body)
+    assert request_payload["app"] == {"appid": "app-id", "cluster": "cluster", "token": "access-token"}
+    assert request_payload["audio"]["language"] == "ja-JP"
+    assert sent[1][1] & 0x0F == voice_providers.VOLC_NEG_SEQUENCE
+    assert voice_providers.gzip.decompress(sent[1][8:]) == b"pcm"
 
 
-def test_tts_probe_builds_device_rate_wav_preview_for_voxcpm_pcm(monkeypatch):
+def test_qwen3_asr_uses_dashscope_audio_message(monkeypatch):
     captured = {}
-    source_rate = 24000
-    source_samples = [int(index * 1000) for index in range(24)]
-    source_pcm = b"".join(sample.to_bytes(2, "little", signed=True) for sample in source_samples)
 
-    class FakeResponse:
-        def __init__(self, status=200, body=b"") -> None:
-            self.status = status
-            self.body = body
+    class FakeConversation:
+        @staticmethod
+        def call(**kwargs):
+            captured.update(kwargs)
+            audio_path = Path(kwargs["messages"][0]["content"][0]["audio"])
+            captured["audio_bytes"] = audio_path.read_bytes()
+            return [{"output": {"choices": [{"message": {"content": [{"text": "  Qwen 结果  "}]}}]}}]
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, _size=-1):
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url == "http://tts.local/health":
-            return FakeResponse(status=200)
-        captured["url"] = request.full_url
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return FakeResponse(status=200, body=source_pcm)
-
-    monkeypatch.setattr(lily_server, "urlopen", fake_urlopen)
-
-    payload = lily_server._probe_tts_endpoint(
-        "http://tts.local/v1/audio/speech",
-        provider="voxcpm",
-        model="voxcpm2",
-        voice="yan",
-        audio_format="pcm",
-        sample_rate=source_rate,
-        timeout=3.0,
+    fake_dashscope = type("FakeDashscope", (), {"api_key": "", "MultiModalConversation": FakeConversation})()
+    monkeypatch.setitem(sys.modules, "dashscope", fake_dashscope)
+    runtime = AuraRuntimeConfig(
+        asr_model="qwen3-asr-flash",
+        asr_language="en",
+        asr_api_key="dashscope-key",
     )
 
-    assert payload["ok"] is True
-    assert payload["stage"] == "speech"
-    assert captured["url"] == "http://tts.local/v1/audio/speech"
-    assert captured["body"]["voice"] == "yan"
-    assert captured["body"]["sample_rate"] == source_rate
-    assert payload["source_sample_rate"] == source_rate
-    assert payload["device_sample_rate"] == lily_server.DEVICE_SAMPLE_RATE
-    assert payload["resampled_for_device"] is True
-    assert payload["device_audio_bytes"] == int(len(source_pcm) / 2 * lily_server.DEVICE_SAMPLE_RATE / source_rate) * 2
-    assert payload["audio_data_url"].startswith("data:audio/wav;base64,")
+    assert voice_providers.transcribe_qwen3_asr(runtime, b"wave-data", timeout=3) == "Qwen 结果"
+    assert fake_dashscope.api_key == "dashscope-key"
+    assert captured["model"] == "qwen3-asr-flash"
+    assert captured["result_format"] == "message"
+    assert captured["stream"] is True
+    assert captured["asr_options"]["language"] == "en-US"
+    assert captured["audio_bytes"] == b"wave-data"
+
+
+def test_baidu_oauth_and_tts_request_returns_pcm(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append((req, timeout))
+        if "oauth" in req.full_url:
+            return b'{"access_token":"oauth-token"}'
+        return b"\x01\x00\x02\x00"
+
+    monkeypatch.setattr(voice_providers, "_urlopen", fake_urlopen)
+    runtime = AuraRuntimeConfig(
+        asr_language="en",
+        tts_voice="0",
+        tts_base_url="https://tts.example.test/text2audio",
+        tts_provider_options={"client_id": "client-id", "client_secret": "client-secret"},
+    )
+
+    assert voice_providers.synthesize_baidu(runtime, "hello", sample_rate=24000, timeout=2) == b"\x01\x00\x02\x00"
+    oauth_request, _ = calls[0]
+    tts_request, tts_timeout = calls[1]
+    assert oauth_request.full_url.startswith(voice_providers.BAIDU_OAUTH_URL)
+    form = dict(item.split("=", 1) for item in tts_request.data.decode("utf-8").split("&"))
+    assert form["tok"] == "oauth-token"
+    assert form["lan"] == "en"
+    assert form["aue"] == "4"
+    assert tts_timeout == 2
+
+
+def test_minimax_tencent_and_nls_tts_payloads(monkeypatch):
+    captured = []
+
+    def fake_json_request(url, payload, headers, timeout):
+        captured.append((url, payload, headers, timeout))
+        if "minimax" in url:
+            return {"data": {"audio": "01000200"}}
+        return {"data": base64.b64encode(b"pcm").decode("ascii")}
+
+    monkeypatch.setattr(voice_providers, "_json_request", fake_json_request)
+    minimax = AuraRuntimeConfig(
+        tts_model="speech-2.6-hd",
+        tts_voice="voice-id",
+        tts_provider_options={"api_key": "mini-key", "group_id": "group-id"},
+    )
+    assert voice_providers.synthesize_minimax(minimax, "你好", sample_rate=24000, timeout=3) == b"\x01\x00\x02\x00"
+    url, payload, headers, timeout = captured[0]
+    assert url.endswith("?GroupId=group-id")
+    assert headers["authorization"] == "Bearer mini-key"
+    assert payload["audio_setting"]["format"] == "pcm"
+    assert timeout == 3
+
+    monkeypatch.setattr(voice_providers, "time", type("Clock", (), {"time": staticmethod(lambda: 1_700_000_000)})())
+    tencent_runtime = AuraRuntimeConfig(
+        tts_voice="101001",
+        tts_provider_options={"secret_id": "id", "secret_key": "key", "region": "ap-beijing"},
+    )
+    headers, body = voice_providers.tencent_headers(
+        service="tts", action="TextToVoice", version="2019-08-23", secret_id="id", secret_key="key", payload={"Text": "你好"}, region="ap-beijing",
+    )
+    assert headers["Host"] == "tts.tencentcloudapi.com"
+    assert headers["X-TC-Region"] == "ap-beijing"
+    assert "Credential=id/" in headers["Authorization"]
+    assert json.loads(body.decode("utf-8")) == {"Text": "你好"}
+
+    nls_requests = []
+    monkeypatch.setattr(voice_providers, "_urlopen", lambda req, timeout: nls_requests.append((req, timeout)) or b"pcm")
+    nls = AuraRuntimeConfig(
+        tts_voice="xiaoyun",
+        tts_base_url="https://nls.example.test/ignored",
+        tts_provider_options={"appkey": "nls-app", "token": "nls-token"},
+    )
+    assert voice_providers.synthesize_aliyun_nls(nls, "测试", sample_rate=16000, timeout=5) == b"pcm"
+    nls_body = json.loads(nls_requests[0][0].data.decode("utf-8"))
+    assert nls_requests[0][0].full_url == "https://nls.example.test/stream/v1/tts"
+    assert nls_body["appkey"] == "nls-app"
+    assert nls_body["token"] == "nls-token"
+    assert nls_body["sample_rate"] == 16000
 
 
 def test_gateway_stepfun_asr_url_uses_step_plan_endpoint():
@@ -3243,8 +2789,6 @@ def test_gateway_bridge_stream_reuses_stepfun_ws_tts_session(monkeypatch, tmp_pa
                         "aura_model_mode": "aura_model",
                         "aura_model_provider": "stepfun",
                         "aura_model_model": "stepaudio-2.5-chat",
-                        "aura_model_billing_scope": "step_plan",
-                        "tts_billing_scope": "step_plan",
                         "model_route": "direct_llm",
                     },
                 },
@@ -3320,8 +2864,7 @@ def test_gateway_bridge_stream_reuses_stepfun_ws_tts_session(monkeypatch, tmp_pa
     assert timing["payload"]["aura_llm_first_audible_delta_ms"] == 430
     assert timing["payload"]["aura_llm_complete_ms"] == 980
     assert timing["payload"]["aura_llm_stop_reason"] == "voice_compact_limit"
-    assert timing["payload"]["aura_model_billing_scope"] == "step_plan"
-    assert timing["payload"]["tts_billing_scope"] == "step_plan"
+    assert timing["payload"]["aura_model_provider"] == "stepfun"
 
 
 def test_gateway_bridge_stream_sends_short_unpunctuated_first_segment(monkeypatch, tmp_path):
@@ -10210,7 +9753,23 @@ def test_gateway_status_update_payload_uses_cached_weather(tmp_path):
     assert payload["weather_observed_at"] == "2026-06-04T14:00"
 
 
-def test_gateway_status_update_payload_prioritizes_local_dialogue_quota(tmp_path):
+def test_gateway_status_update_payload_exposes_only_live_pending_reminders(tmp_path):
+    reminder_id = "info-board-test"
+    future = time.time() + 3600
+    gateway_module._SCHEDULED_REMINDER_INFO[reminder_id] = {
+        "fire_at": future,
+        "label": "明天上午的事项",
+    }
+    try:
+        payload = status_update_payload(AuraRuntimeConfig(persona_home=str(tmp_path / "persona-home")))
+    finally:
+        gateway_module._SCHEDULED_REMINDER_INFO.pop(reminder_id, None)
+
+    moment = time.localtime(future)
+    assert payload["notes"] == [f"{moment.tm_mon:02d}/{moment.tm_mday:02d} {moment.tm_hour:02d}:{moment.tm_min:02d} 明天上午的事项"]
+
+
+def test_gateway_status_update_payload_prioritizes_local_dialogue_quota(tmp_path, monkeypatch):
     runtime = AuraRuntimeConfig(
         persona_home=str(tmp_path / "persona-home"),
         aura_model_provider="stepfun",
@@ -10218,6 +9777,7 @@ def test_gateway_status_update_payload_prioritizes_local_dialogue_quota(tmp_path
         aura_model_base_url="https://api.stepfun.com/step_plan/v1",
     )
     key = gateway_module._model_quota_cache_key(runtime)
+    monkeypatch.setenv("AURA_DIALOGUE_QUOTA_DB", str(tmp_path / "dialogue_quota.sqlite3"))
     gateway_module._MODEL_QUOTA_CACHE[key] = (
         time.monotonic(),
         _normalize_stepfun_plan(
@@ -10379,11 +9939,15 @@ def test_lily_http_handler_rejects_large_body(monkeypatch):
         thread.join(timeout=3)
 
 
-def test_native_env_keeps_stepfun_tts_warm_enabled_by_default():
+def test_native_env_uses_project_local_state_and_provider_neutral_voice_defaults():
     root = Path(__file__).resolve().parents[1]
     env_example_text = (root / ".env.example").read_text(encoding="utf-8")
 
-    assert "AURA_TTS_STEPFUN_WS_WARM_ENABLED=1" in env_example_text
+    assert "AURA_PERSONA_HOME=.aura/persona" in env_example_text
+    assert "AURA_DIALOGUE_QUOTA_DB=.aura/persona/config/dialogue_quota.sqlite3" in env_example_text
+    assert "AURA_TTS_PROVIDER=none" in env_example_text
+    assert "AURA_ASR_PROVIDER=local" in env_example_text
+    assert "AURA_TTS_STEPFUN_WS_WARM_ENABLED" not in env_example_text
 
 
 def test_voice_latency_matrix_summarizes_profile_metrics():
@@ -10417,57 +9981,6 @@ def test_voice_latency_matrix_summarizes_profile_metrics():
     assert summary["metrics"]["first_audio_sent_ms"]["p95"] == 720
     assert summary["metrics"]["tts_first_text_to_audio_ms"]["p95"] == 510
     assert summary["metrics"]["tts_audio_chunk_stall_count"]["max"] == 1
-
-
-def test_voice_latency_benchmark_speech_stop_sim_waits_for_server_vad(monkeypatch, tmp_path):
-    import tools.voice_latency_benchmark as benchmark
-
-    captured = {}
-
-    class FakeWs:
-        pass
-
-    async def fake_handle_connection(ws, config):
-        captured["ws"] = ws
-        await ws.send(json.dumps({
-            "type": "system",
-            "payload": {"action": "server_vad_stop", "turn_id": 1},
-        }))
-        await ws.send(json.dumps({
-            "type": "system",
-            "payload": {"action": "turn_audio_timing", "turn_id": 1},
-        }))
-
-    monkeypatch.setattr(benchmark, "handle_connection", fake_handle_connection)
-    monkeypatch.setattr(benchmark.gateway_module, "ws_connect", lambda url, **kwargs: FakeWs())
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        asr_enabled=True,
-        asr_mode="api",
-        asr_provider="stepfun",
-        asr_model="stepaudio-2.5-asr-stream",
-        asr_base_url="https://api.stepfun.com/v1",
-        asr_api_key="unit-key",
-    )
-
-    result = asyncio.run(benchmark.run_voice_sim_once(
-        runtime,
-        "测试一下",
-        bridge_url="http://bridge/turn",
-        timeout=5,
-        audio_ms=100,
-        fake_streaming_asr=False,
-        fake_streaming_asr_early_final=False,
-        fake_streaming_asr_speech_stop=True,
-    ))
-
-    assert result["fake_streaming_asr_speech_stop"] is True
-    assert result["ok"] is False
-    assert result["audio_bytes"] == 0
-    assert captured["ws"].stop_after_server_vad is True
-    assert captured["ws"].wait_after_stop is True
-    assert captured["ws"].stop_timeout <= 0.25
 
 
 def test_voice_latency_benchmark_persona_llm_splits_soul_llm_timing(monkeypatch, tmp_path):
@@ -10525,7 +10038,7 @@ def test_voice_latency_benchmark_persona_llm_splits_soul_llm_timing(monkeypatch,
     assert result["aura_llm_complete_ms"] >= 0
     assert result["persona_context_build_ms"] >= 0
     assert result["persona_prompt_chars"] > len("测试 soul")
-    assert result["llm_billing_scope"] == "step_plan"
+    assert result["llm_provider"] == "stepfun"
     assert result["tts_segment_count"] >= 1
     assert result["tts_segments"][0]["text"].startswith("从工作")
 
@@ -10561,7 +10074,7 @@ def test_voice_latency_benchmark_tts_only_reports_first_audio(monkeypatch, tmp_p
 
     assert result["mode"] == "tts-only"
     assert result["ok"] is True
-    assert result["tts_billing_scope"] == "step_plan"
+    assert result["tts_provider"] == "stepfun"
     assert result["first_audio_sent_ms"] >= 0
     assert result["tts_first_chunk_ms"] == 9
     assert result["tts_first_audio_ms"] == 11

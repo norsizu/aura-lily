@@ -4,7 +4,7 @@ import json
 import os
 import time
 import hashlib
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,16 @@ PROFILE_LIMIT = 24
 WEATHER_CACHE_LIMIT = 12
 LOCAL_ASR_HTTP_BASE_URL = "http://127.0.0.1:8766/v1"
 AURA_MODEL_REASONING_EFFORTS = {"", "none", "low", "medium", "high"}
+PROVIDER_OPTION_SECRET_KEYS = {
+    "access_token",
+    "api_key",
+    "app_key",
+    "authorization",
+    "client_secret",
+    "secret",
+    "secret_key",
+    "token",
+}
 TTS_PROVIDERS = [
     {
         "id": "none",
@@ -35,70 +45,86 @@ TTS_PROVIDERS = [
         "requires_base_url": False,
     },
     {
-        "id": "edge",
-        "label": "Edge TTS",
-        "provider": "edge",
-        "base_url": "",
-        "models": ["edge-tts"],
-        "voices": ["zh-CN-XiaoxiaoNeural", "zh-CN-XiaoyiNeural"],
-        "requires_api_key": False,
-        "requires_base_url": False,
-    },
-    {
         "id": "openai",
-        "label": "OpenAI TTS",
+        "label": "OpenAI-compatible TTS",
         "provider": "openai",
         "base_url": "https://api.openai.com/v1",
         "models": ["gpt-4o-mini-tts", "tts-1"],
         "voices": ["alloy", "verse", "nova"],
+        "group": "OpenAI-compatible",
         "requires_api_key": True,
         "requires_base_url": False,
     },
     {
-        "id": "elevenlabs",
-        "label": "ElevenLabs",
-        "provider": "elevenlabs",
-        "base_url": "https://api.elevenlabs.io/v1",
-        "models": ["eleven_multilingual_v2"],
+        "id": "aliyun-nls",
+        "label": "阿里云智能语音 NLS",
+        "provider": "aliyun-nls",
+        "base_url": "https://nls-gateway-cn-shanghai.aliyuncs.com",
+        "models": ["nls-tts"],
+        "voices": ["xiaoyun", "xiaogang", "ruoxi"],
+        "group": "国内云服务",
+        "description": "NLS HTTP TTS。Provider 选项填写 appkey 与 token；token 也可填在 API Key。输出使用 PCM。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+    },
+    {
+        "id": "volcengine",
+        "label": "火山引擎语音合成",
+        "provider": "volcengine",
+        "base_url": "https://openspeech.bytedance.com/api/v1/tts",
+        "models": ["volcano_tts"],
         "voices": [],
+        "group": "国内云服务",
+        "description": "火山引擎 HTTP TTS。Provider 选项填写 appid、cluster；API Key 填 access_token。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+    },
+    {
+        "id": "baidu",
+        "label": "百度智能云语音合成",
+        "provider": "baidu",
+        "base_url": "https://tsn.baidu.com/text2audio",
+        "models": ["baidu-tts"],
+        "voices": [],
+        "group": "国内云服务",
+        "description": "百度 REST TTS。Provider 选项填写 client_id/client_secret，或直接填写 access_token。",
         "requires_api_key": True,
         "requires_base_url": False,
     },
     {
         "id": "minimax",
-        "label": "MiniMax TTS",
+        "label": "MiniMax 语音合成",
         "provider": "minimax",
-        "base_url": "https://api.minimax.chat/v1",
-        "models": ["speech-02-hd", "speech-02-turbo"],
+        "base_url": "https://api.minimaxi.com/v1/t2a_v2",
+        "models": ["speech-2.6-hd", "speech-2.6-turbo"],
         "voices": [],
+        "group": "国内云服务",
+        "description": "MiniMax HTTP TTS。API Key 填 access token，Voice 填系统音色或 voice id。",
         "requires_api_key": True,
         "requires_base_url": False,
     },
     {
-        "id": "stepfun-open-platform",
-        "label": "StepFun Open Platform TTS",
+        "id": "tencent",
+        "label": "腾讯云语音合成",
+        "provider": "tencent",
+        "base_url": "https://tts.tencentcloudapi.com",
+        "models": ["tencent-tts"],
+        "voices": ["101001"],
+        "group": "国内云服务",
+        "description": "腾讯云 TC3 TTS。Provider 选项填写 secret_id、secret_key、region；Voice 填数字音色 ID。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+    },
+    {
+        "id": "stepfun-realtime",
+        "label": "StepFun Realtime TTS",
         "provider": "stepfun",
         "base_url": "https://api.stepfun.com/v1",
         "models": ["stepaudio-2.5-tts"],
         "voices": [],
-        "description": "StepFun 开放平台 TTS：网关优先使用 WebSocket /v1/realtime/audio 流式合成。注意这不是 Step Plan 订阅路径。",
+        "group": "实时语音（可选）",
+        "description": "可选 WebSocket TTS 适配器。仅在已经拥有对应服务凭据时选择。",
         "route": "ws_tts",
-        "billing_scope": "open_platform",
-        "recommended": True,
-        "streaming": True,
-        "requires_api_key": True,
-        "requires_base_url": False,
-    },
-    {
-        "id": "stepfun-step-plan",
-        "label": "StepFun Step Plan TTS",
-        "provider": "stepfun",
-        "base_url": "https://api.stepfun.com/step_plan/v1",
-        "models": ["stepaudio-2.5-tts"],
-        "voices": [],
-        "description": "Step Plan TTS：网关优先使用 WebSocket /step_plan/v1/realtime/audio 流式合成；需要账号确有 active Step Plan。",
-        "route": "step_plan_ws_tts",
-        "billing_scope": "step_plan",
         "streaming": True,
         "requires_api_key": True,
         "requires_base_url": False,
@@ -110,6 +136,7 @@ TTS_PROVIDERS = [
         "base_url": "",
         "models": ["voxcpm2"],
         "voices": [],
+        "group": "自托管",
         "requires_api_key": False,
         "requires_base_url": True,
     },
@@ -120,6 +147,7 @@ TTS_PROVIDERS = [
         "base_url": "",
         "models": [],
         "voices": [],
+        "group": "自托管",
         "requires_api_key": True,
         "requires_base_url": True,
     },
@@ -130,6 +158,7 @@ TTS_PROVIDERS = [
         "base_url": "",
         "models": [],
         "voices": [],
+        "group": "自托管",
         "requires_api_key": True,
         "requires_base_url": True,
     },
@@ -141,6 +170,7 @@ ASR_PROVIDERS = [
         "provider": "custom",
         "base_url": LOCAL_ASR_HTTP_BASE_URL,
         "models": ["whisper-base-local"],
+        "group": "本地与自托管",
         "requires_api_key": False,
         "requires_base_url": False,
         "mode": "api",
@@ -151,6 +181,7 @@ ASR_PROVIDERS = [
         "provider": "local",
         "base_url": "",
         "models": ["whisper-large-v3", "faster-whisper-large-v3", "whisper-base"],
+        "group": "本地与自托管",
         "requires_api_key": False,
         "requires_base_url": False,
         "mode": "local",
@@ -161,61 +192,81 @@ ASR_PROVIDERS = [
         "provider": "openai",
         "base_url": "https://api.openai.com/v1",
         "models": ["gpt-4o-transcribe", "whisper-1"],
+        "group": "OpenAI-compatible",
         "requires_api_key": True,
         "requires_base_url": False,
         "mode": "api",
     },
     {
-        "id": "stepfun-step-plan",
-        "label": "StepFun Step Plan ASR (订阅内)",
-        "provider": "stepfun",
-        "base_url": "https://api.stepfun.com/step_plan/v1",
-        "models": ["stepaudio-2.5-asr"],
-        "description": "Step Plan 覆盖的正式 ASR：一次性提交录音，通过 HTTP+SSE /step_plan/v1/audio/asr/sse 流式返回文本；适合作为订阅内稳妥兜底。",
-        "route": "step_plan_sse",
-        "billing_scope": "step_plan",
-        "recommended": True,
-        "streaming": False,
+        "id": "aliyun-nls",
+        "label": "阿里云智能语音 NLS",
+        "provider": "aliyun-nls",
+        "base_url": "https://nls-gateway-cn-shanghai.aliyuncs.com",
+        "models": ["nls-asr"],
+        "group": "国内云服务",
+        "description": "NLS REST ASR。Provider 选项填写 appkey 与 token；token 也可填在 API Key。",
         "requires_api_key": True,
         "requires_base_url": False,
         "mode": "api",
     },
     {
-        "id": "stepfun-stream",
-        "label": "StepFun 实时 ASR (语义流式)",
+        "id": "volcengine",
+        "label": "火山引擎录音文件识别",
+        "provider": "volcengine",
+        "base_url": "wss://openspeech.bytedance.com/api/v2/asr",
+        "models": ["volcengine-asr"],
+        "group": "国内云服务",
+        "description": "火山引擎非流式 ASR。Provider 选项填写 appid、cluster；API Key 填 access_token。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "mode": "api",
+    },
+    {
+        "id": "qwen3-asr",
+        "label": "阿里云百炼 Qwen3-ASR-Flash",
+        "provider": "qwen3-asr",
+        "base_url": "https://dashscope.aliyuncs.com/api/v1",
+        "models": ["qwen3-asr-flash"],
+        "group": "国内云服务",
+        "description": "通过 DashScope SDK 调用 Qwen3-ASR-Flash；需要额外安装 dashscope，API Key 填 DashScope key。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "mode": "api",
+    },
+    {
+        "id": "baidu",
+        "label": "百度智能云语音识别",
+        "provider": "baidu",
+        "base_url": "https://vop.baidu.com/server_api",
+        "models": ["baidu-asr"],
+        "group": "国内云服务",
+        "description": "百度 REST ASR。Provider 选项填写 client_id/client_secret，或直接填写 access_token。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "mode": "api",
+    },
+    {
+        "id": "tencent",
+        "label": "腾讯云一句话识别",
+        "provider": "tencent",
+        "base_url": "https://asr.tencentcloudapi.com",
+        "models": ["tencent-asr"],
+        "group": "国内云服务",
+        "description": "腾讯云 TC3 ASR。Provider 选项填写 secret_id、secret_key、region。",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "mode": "api",
+    },
+    {
+        "id": "stepfun-realtime",
+        "label": "StepFun Realtime ASR",
         "provider": "stepfun",
         "base_url": "https://api.stepfun.com/v1",
         "models": ["stepaudio-2.5-asr-stream"],
-        "description": "小智式语义流式听写：录音时持续上传音频并接收转写，转写完成后仍进入 Aura/Lily 语义链和 StepFun 流式 TTS。注意它不是 Step Plan ASR SSE 路由。",
+        "group": "实时语音（可选）",
+        "description": "可选实时 ASR 适配器。仅在已经拥有对应服务凭据时选择。",
         "route": "realtime_ws",
-        "billing_scope": "open_platform",
-        "recommended": True,
         "streaming": True,
-        "requires_api_key": True,
-        "requires_base_url": False,
-        "mode": "api",
-    },
-    {
-        "id": "stepfun-step-plan-realtime",
-        "label": "StepFun Step Plan Realtime (实验直连)",
-        "provider": "stepfun-realtime",
-        "base_url": "https://api.stepfun.com/step_plan/v1",
-        "models": ["stepaudio-2.5-realtime"],
-        "description": "Step Plan 端到端实时语音：单 WebSocket 承载音频输入、文本/音频输出。它会绕过 Aura/Lily 语义链，只能作为延迟对比或实验直连。",
-        "route": "step_plan_realtime_ws",
-        "billing_scope": "step_plan",
-        "recommended": False,
-        "streaming": True,
-        "requires_api_key": True,
-        "requires_base_url": False,
-        "mode": "api",
-    },
-    {
-        "id": "elevenlabs",
-        "label": "ElevenLabs Scribe",
-        "provider": "elevenlabs",
-        "base_url": "https://api.elevenlabs.io/v1",
-        "models": ["scribe_v2", "scribe_v1"],
         "requires_api_key": True,
         "requires_base_url": False,
         "mode": "api",
@@ -226,6 +277,7 @@ ASR_PROVIDERS = [
         "provider": "custom",
         "base_url": "",
         "models": [],
+        "group": "自托管",
         "requires_api_key": True,
         "requires_base_url": True,
         "mode": "api",
@@ -235,7 +287,7 @@ ASR_PROVIDERS = [
 
 @dataclass(frozen=True)
 class AuraRuntimeConfig:
-    persona_home: str = "/data/aura-persona"
+    persona_home: str = ".aura/persona"
     config_path: str = ""
     aura_model_mode: str = "hermes_main"
     aura_model_provider: str = ""
@@ -288,6 +340,7 @@ class AuraRuntimeConfig:
     tts_format: str = "pcm"
     tts_sample_rate: int = 24000
     tts_timeout_seconds: int = 15
+    tts_provider_options: dict[str, Any] = field(default_factory=dict)
     tts_profiles: tuple[dict[str, Any], ...] = ()
     asr_enabled: bool = True
     asr_mode: str = "api"
@@ -297,6 +350,7 @@ class AuraRuntimeConfig:
     asr_api_key: str = ""
     asr_language: str = "zh"
     asr_timeout_seconds: int = 30
+    asr_provider_options: dict[str, Any] = field(default_factory=dict)
     asr_profiles: tuple[dict[str, Any], ...] = ()
     dialogue_quota_limit: int = 50
     dialogue_quota_window_seconds: int = 5 * 60 * 60
@@ -316,10 +370,16 @@ class AuraRuntimeConfig:
         fast_key = bool(str(data.pop("fast_reply_api_key", "")).strip())
         tts_key = bool(str(data.pop("tts_api_key", "")).strip())
         asr_key = bool(str(data.pop("asr_api_key", "")).strip())
+        tts_options = _public_provider_options(data.pop("tts_provider_options", {}))
+        asr_options = _public_provider_options(data.pop("asr_provider_options", {}))
         data["aura_model_api_key_configured"] = aura_key
         data["fast_reply_api_key_configured"] = fast_key
         data["tts_api_key_configured"] = tts_key
         data["asr_api_key_configured"] = asr_key
+        data["tts_provider_options"] = tts_options
+        data["asr_provider_options"] = asr_options
+        data["tts_provider_options_configured"] = _provider_option_secret_status(self.tts_provider_options)
+        data["asr_provider_options_configured"] = _provider_option_secret_status(self.asr_provider_options)
         data["runtime_config_path"] = str(self.runtime_config_path)
         data["aura_model_modes"] = [
             {
@@ -355,7 +415,6 @@ class AuraRuntimeConfig:
         data["asr_provider_presets"] = asr_provider_presets()
         data["tts_profiles"] = list(_profiles_with_defaults("tts", self.tts_profiles))
         data["asr_profiles"] = list(_profiles_with_defaults("asr", self.asr_profiles))
-        data["voice_latency_path"] = voice_latency_path(self)
         data["cached_weather"] = cached_weather_snapshot(self)
         data["cached_weather_fresh"] = data["cached_weather"].get("status") == "fresh"
         data["cached_weather_age_seconds"] = data["cached_weather"].get("age_seconds")
@@ -402,137 +461,53 @@ def asr_provider_presets() -> list[dict[str, Any]]:
 
 
 def voice_latency_path(config: AuraRuntimeConfig) -> dict[str, Any]:
+    """Describe the selected voice pipeline without provider-specific billing logic.
+
+    This is intentionally a configuration summary rather than a latency promise:
+    actual latency is measured by the gateway and its benchmark tool.
+    """
+
     asr_enabled = bool(config.asr_enabled)
-    asr_provider = str(config.asr_provider or "").strip().lower()
-    asr_model = str(config.asr_model or "").strip().lower()
-    asr_base_url = str(config.asr_base_url or "").strip()
-    llm_provider = str(config.aura_model_provider or "").strip().lower()
-    llm_base_url = str(config.aura_model_base_url or "").strip()
-    tts_provider = str(config.tts_provider or "").strip().lower()
-    tts_model = str(config.tts_model or "").strip()
-    tts_base_url = str(config.tts_base_url or "").strip()
-    llm_billing_scope = _stepfun_billing_scope(llm_base_url) if llm_provider == "stepfun" else ""
-    tts_billing_scope = _stepfun_billing_scope(tts_base_url) if tts_provider == "stepfun" else ""
-    asr_billing_scope = _stepfun_billing_scope(asr_base_url) if asr_provider.startswith("stepfun") else ""
-    asr_streaming = (
+    asr_api = asr_enabled and config.asr_mode == "api"
+    asr_configured = bool(
         asr_enabled
-        and config.asr_mode == "api"
-        and asr_provider == "stepfun"
-        and "stream" in asr_model
-        and bool(str(config.asr_api_key or "").strip())
+        and (
+            config.asr_mode == "local"
+            or (str(config.asr_provider or "").strip() and str(config.asr_base_url or "").strip())
+        )
     )
-    asr_step_plan_sse = (
-        asr_enabled
-        and config.asr_mode == "api"
-        and asr_provider == "stepfun"
-        and "step_plan" in asr_base_url
-        and "stream" not in asr_model
-        and bool(str(config.asr_api_key or "").strip())
+    tts_enabled = bool(config.tts_enabled)
+    tts_configured = bool(
+        tts_enabled
+        and str(config.tts_provider or "").strip().lower() not in {"", "none"}
+        and bool(str(config.tts_model or "").strip() or str(config.tts_base_url or "").strip())
     )
-    step_plan_realtime_configured = (
-        asr_enabled
-        and config.asr_mode == "api"
-        and asr_provider in {"stepfun-realtime", "stepfun_realtime"}
-        and "step_plan" in asr_base_url
-        and "realtime" in asr_model
-        and bool(str(config.asr_api_key or "").strip())
+    llm_direct = config.aura_model_mode in {"aura_model", "direct_llm"}
+    llm_configured = bool(
+        not llm_direct
+        or (str(config.aura_model_provider or "").strip() and str(config.aura_model_model or "").strip())
     )
-    step_plan_realtime_direct_enabled = bool(
-        step_plan_realtime_configured
-        and _env_bool("AURA_STEPFUN_REALTIME_DIRECT_REPLY_ENABLED", False)
-    )
-    asr_label = (
-        "StepFun Step Plan Realtime 直连"
-        if step_plan_realtime_direct_enabled
-        else "StepFun Step Plan Realtime (实验直连未启用)"
-        if step_plan_realtime_configured
-        else "StepFun 实时 WS ASR"
-        if asr_streaming
-        else "StepFun Step Plan SSE ASR"
-        if asr_step_plan_sse
-        else "API ASR"
-        if asr_enabled and config.asr_mode == "api"
-        else "本地 ASR"
-        if asr_enabled
-        else "ASR 未启用"
-    )
-    tts_streaming = (
-        bool(config.tts_enabled)
-        and tts_provider == "stepfun"
-        and bool(str(config.tts_api_key or "").strip())
-        and bool(tts_model)
-        and ("step_plan" in tts_base_url or tts_base_url.startswith(("http://", "https://", "ws://", "wss://")))
-    )
-    tts_label = (
-        "StepFun Step Plan WS TTS"
-        if tts_streaming and tts_billing_scope == "step_plan"
-        else "StepFun Open Platform WS TTS"
-        if tts_streaming
-        else "TTS 已启用"
-        if bool(config.tts_enabled)
-        else "TTS 未启用"
-    )
-    llm_streaming = config.aura_model_mode in {"aura_model", "direct_llm"}
-    llm_label = "Aura 直接 LLM 流式" if llm_streaming else "Hermes CLI Agent 非实时"
-    semantic_stream_ready = bool(asr_streaming and llm_streaming and tts_streaming)
-    triplet_stream_ready = semantic_stream_ready
-    ready = bool(triplet_stream_ready or step_plan_realtime_direct_enabled)
-    llm_step_plan = bool(llm_streaming and llm_provider == "stepfun" and "step_plan" in llm_base_url)
-    tts_step_plan = bool(tts_streaming and tts_provider == "stepfun" and "step_plan" in tts_base_url)
-    step_plan_covered = bool(asr_step_plan_sse and llm_step_plan and tts_step_plan)
+    asr_label = "API ASR" if asr_api else "本地 ASR" if asr_enabled else "ASR 未启用"
+    tts_label = "TTS 已配置" if tts_configured else "TTS 未启用" if not tts_enabled else "TTS 待补全"
+    llm_label = "Aura 直接 LLM" if llm_direct else "Hermes CLI Agent"
+    ready = bool(asr_configured and tts_configured and llm_configured)
     return {
-        "xiaozhi_style_ready": ready,
-        "semantic_stream_ready": semantic_stream_ready,
-        "step_plan_realtime_ready": step_plan_realtime_direct_enabled,
-        "step_plan_realtime_configured": step_plan_realtime_configured,
-        "step_plan_realtime_direct_enabled": step_plan_realtime_direct_enabled,
-        "step_plan_covered": step_plan_covered,
-        "asr_streaming": bool(asr_streaming),
-        "asr_step_plan_sse": bool(asr_step_plan_sse),
-        "asr_step_plan_realtime": bool(step_plan_realtime_configured),
-        "asr_step_plan_realtime_direct": bool(step_plan_realtime_direct_enabled),
-        "llm_streaming": bool(llm_streaming),
-        "llm_step_plan": llm_step_plan,
-        "tts_streaming": bool(tts_streaming),
-        "tts_step_plan": tts_step_plan,
-        "asr_billing_scope": asr_billing_scope,
-        "llm_billing_scope": llm_billing_scope,
-        "tts_billing_scope": tts_billing_scope,
+        "ready": ready,
+        "asr_enabled": asr_enabled,
+        "asr_configured": asr_configured,
+        "tts_enabled": tts_enabled,
+        "tts_configured": tts_configured,
+        "llm_direct": llm_direct,
+        "llm_configured": llm_configured,
         "asr_label": asr_label,
         "llm_label": llm_label,
         "tts_label": tts_label,
-        "step_plan_summary": (
-            "Step Plan Realtime 直连已启用；这是绕过 Aura/Lily 语义链的实验极速通道，只用于对比延迟。"
-            if step_plan_realtime_direct_enabled
-            else
-            "Step Plan Realtime 已配置但默认不启用直连；当前不会绕过 Aura/Lily。要实验极速直连，设置 AURA_STEPFUN_REALTIME_DIRECT_REPLY_ENABLED=1。"
-            if step_plan_realtime_configured
-            else
-            "Step Plan ASR/LLM/TTS 已覆盖；ASR 为录音结束后 SSE 转写，属于订阅内安全闭环。"
-            if step_plan_covered
-            else "Step Plan 覆盖不完整：建议优先配置 Step Plan ASR SSE、StepFun Step Plan Aura LLM、StepFun Step Plan TTS，并分别保存对应 API Key；Realtime 直连只作为实验对比。"
-        ),
         "summary": (
-            "已进入 Step Plan Realtime 实验直连。"
-            if step_plan_realtime_direct_enabled
-            else
-            "已进入小智式语义流式：实时 ASR -> Aura LLM 流式 -> StepFun TTS 流式。"
-            if semantic_stream_ready
-            else
-            "已具备 ASR/LLM/TTS 三段流式链路。"
-            if triplet_stream_ready
-            else "未完全进入三段流式：需要 StepFun 实时 ASR、Aura 直接 LLM、StepFun WS TTS 同时可用。"
+            "语音链路配置完整。"
+            if ready
+            else "语音链路尚未完整配置。"
         ),
     }
-
-
-def _stepfun_billing_scope(base_url: str) -> str:
-    text = str(base_url or "").strip().lower()
-    if "step_plan" in text:
-        return "step_plan"
-    if "api.stepfun." in text or "stepfun" in text:
-        return "open_platform"
-    return ""
 
 
 def cached_weather_snapshot(config: AuraRuntimeConfig, *, now: float | None = None) -> dict[str, Any]:
@@ -591,7 +566,7 @@ def _weather_display(*, city: str, temperature: str, condition: str, humidity: s
 
 def _config_from_env(*, persona_home: str = "") -> AuraRuntimeConfig:
     return AuraRuntimeConfig(
-        persona_home=persona_home or os.environ.get("AURA_PERSONA_HOME", "/data/aura-persona"),
+        persona_home=persona_home or os.environ.get("AURA_PERSONA_HOME", ".aura/persona"),
         config_path=os.environ.get(RUNTIME_CONFIG_ENV, ""),
         aura_model_mode=_env_choice("AURA_MODEL_MODE", "hermes_main", AURA_MODEL_MODES),
         aura_model_provider=os.environ.get("AURA_MODEL_PROVIDER", ""),
@@ -637,6 +612,7 @@ def _config_from_env(*, persona_home: str = "") -> AuraRuntimeConfig:
         tts_format=os.environ.get("AURA_TTS_FORMAT", "pcm"),
         tts_sample_rate=_env_int("AURA_TTS_SAMPLE_RATE", 24000),
         tts_timeout_seconds=_env_int("AURA_TTS_TIMEOUT_SECONDS", 15),
+        tts_provider_options=_env_json_object("AURA_TTS_PROVIDER_OPTIONS"),
         tts_profiles=_default_audio_profiles("tts"),
         asr_enabled=_env_bool("AURA_ASR_ENABLED", True),
         asr_mode=_env_choice("AURA_ASR_MODE", "api", ASR_MODES),
@@ -646,6 +622,7 @@ def _config_from_env(*, persona_home: str = "") -> AuraRuntimeConfig:
         asr_api_key=os.environ.get("AURA_ASR_API_KEY", ""),
         asr_language=os.environ.get("AURA_ASR_LANGUAGE", "zh"),
         asr_timeout_seconds=_env_int("AURA_ASR_TIMEOUT_SECONDS", 30),
+        asr_provider_options=_env_json_object("AURA_ASR_PROVIDER_OPTIONS"),
         asr_profiles=_default_audio_profiles("asr"),
         dialogue_quota_limit=_env_int("AURA_DIALOGUE_QUOTA_LIMIT", 50),
         dialogue_quota_window_seconds=_env_int("AURA_DIALOGUE_QUOTA_WINDOW_SECONDS", 5 * 60 * 60),
@@ -732,6 +709,13 @@ def _merge_config(
         if key == "asr_profiles":
             values[key] = _coerce_audio_profiles("asr", value)
             continue
+        if key in {"tts_provider_options", "asr_provider_options"}:
+            values[key] = _coerce_provider_options(
+                value,
+                existing=values.get(key),
+                preserve_existing_secrets=preserve_existing_secrets,
+            )
+            continue
         if key == "user_weather_cache":
             values[key] = _coerce_weather_cache(value)
             continue
@@ -775,10 +759,12 @@ def _merge_config(
             values["cached_weather_updated_at"] = int(time.time())
     values["tts_sample_rate"] = max(8000, int(values["tts_sample_rate"] or 24000))
     values["tts_timeout_seconds"] = max(1, int(values["tts_timeout_seconds"] or 15))
+    values["tts_provider_options"] = _coerce_provider_options(values.get("tts_provider_options"))
     if not values["tts_provider"]:
         values["tts_provider"] = "none"
     values["asr_mode"] = _choice(values["asr_mode"], config.asr_mode, ASR_MODES)
     values["asr_timeout_seconds"] = max(1, int(values["asr_timeout_seconds"] or 30))
+    values["asr_provider_options"] = _coerce_provider_options(values.get("asr_provider_options"))
     values["dialogue_quota_limit"] = max(
         1,
         min(100_000, int(values["dialogue_quota_limit"] or 50)),
@@ -840,31 +826,7 @@ def _default_audio_profiles(kind: str) -> tuple[dict[str, Any], ...]:
             _coerce_audio_profiles(
                 "asr",
                 [
-	                    {
-	                        "id": "asr-stepfun-plan-realtime",
-	                        "label": "StepFun Step Plan Realtime",
-	                        "enabled": True,
-	                        "mode": "api",
-	                        "provider": "stepfun-realtime",
-	                        "model": "stepaudio-2.5-realtime",
-	                        "base_url": "https://api.stepfun.com/step_plan/v1",
-	                        "language": "zh",
-	                        "timeout_seconds": 30,
-	                        "builtin": True,
-	                    },
-	                    {
-	                        "id": "asr-stepfun-plan-sse",
-	                        "label": "StepFun Step Plan ASR",
-	                        "enabled": True,
-	                        "mode": "api",
-	                        "provider": "stepfun",
-	                        "model": "stepaudio-2.5-asr",
-	                        "base_url": "https://api.stepfun.com/step_plan/v1",
-	                        "language": "zh",
-	                        "timeout_seconds": 30,
-	                        "builtin": True,
-	                    },
-	                    {
+                    {
 	                        "id": "asr-local-whisper-http",
 	                        "label": "本机 Whisper HTTP (small)",
 	                        "enabled": True,
@@ -1225,6 +1187,80 @@ def _env_choice(name: str, default: str, allowed: set[str]) -> str:
 
 def _env_int(name: str, default: int) -> int:
     return _coerce_int(os.environ.get(name, ""), default)
+
+
+def _env_json_object(name: str) -> dict[str, Any]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return _coerce_provider_options(value)
+
+
+def _provider_option_is_secret(key: Any) -> bool:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return False
+    if normalized in PROVIDER_OPTION_SECRET_KEYS:
+        return True
+    return any(part in normalized for part in ("token", "secret", "password", "credential", "private_key"))
+
+
+def _coerce_provider_options(
+    value: Any,
+    *,
+    existing: Any = None,
+    preserve_existing_secrets: bool = False,
+) -> dict[str, Any]:
+    """Keep provider options small and preserve masked secrets on an admin save."""
+
+    if not isinstance(value, dict):
+        return {}
+    old = existing if isinstance(existing, dict) else {}
+    clean: dict[str, Any] = {}
+    for raw_key, raw_value in list(value.items())[:32]:
+        key = str(raw_key or "").strip().lower().replace("-", "_")
+        if not key or len(key) > 64 or not all(ch.isalnum() or ch == "_" for ch in key):
+            continue
+        secret = _provider_option_is_secret(key)
+        if raw_value is None:
+            # An explicit null clears a previously stored secret.
+            continue
+        if isinstance(raw_value, (dict, list, tuple, set)):
+            continue
+        text = str(raw_value).strip()
+        if not text:
+            if secret and preserve_existing_secrets and old.get(key):
+                clean[key] = old[key]
+            continue
+        if secret and preserve_existing_secrets and text == CONFIGURED_VALUE_MARKER and old.get(key):
+            clean[key] = old[key]
+            continue
+        clean[key] = text[:512]
+    return clean
+
+
+def _public_provider_options(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    public: dict[str, Any] = {}
+    for key, raw_value in source.items():
+        if _provider_option_is_secret(key):
+            public[str(key)] = CONFIGURED_VALUE_MARKER
+        else:
+            public[str(key)] = raw_value
+    return public
+
+
+def _provider_option_secret_status(value: Any) -> dict[str, bool]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        str(key): bool(str(raw_value or "").strip())
+        for key, raw_value in source.items()
+        if _provider_option_is_secret(key)
+    }
 
 
 def _choice(value: Any, default: str, allowed: set[str]) -> str:

@@ -312,14 +312,9 @@ class AuraPersonaGateway:
                 "voice_turn_enabled": self.runtime_config.voice_turn_enabled,
                 "tts_enabled": self.runtime_config.tts_enabled,
                 "tts_provider": self.runtime_config.tts_provider,
-                "tts_billing_scope": _stepfun_billing_scope(self.runtime_config.tts_provider, self.runtime_config.tts_base_url),
                 "aura_model_mode": self.runtime_config.aura_model_mode,
                 "aura_model_provider": self.runtime_config.aura_model_provider,
                 "aura_model_model": self.runtime_config.aura_model_model,
-                "aura_model_billing_scope": _stepfun_billing_scope(
-                    self.runtime_config.aura_model_provider,
-                    self.runtime_config.aura_model_base_url,
-                ),
                 "model_route": model_result.evidence.get("route", "hermes_agent"),
             },
             "setup": setup_debug,
@@ -1015,14 +1010,9 @@ class AuraPersonaGateway:
                 "voice_turn_enabled": self.runtime_config.voice_turn_enabled,
                 "tts_enabled": self.runtime_config.tts_enabled,
                 "tts_provider": self.runtime_config.tts_provider,
-                "tts_billing_scope": _stepfun_billing_scope(self.runtime_config.tts_provider, self.runtime_config.tts_base_url),
                 "aura_model_mode": self.runtime_config.aura_model_mode,
                 "aura_model_provider": self.runtime_config.aura_model_provider,
                 "aura_model_model": self.runtime_config.aura_model_model,
-                "aura_model_billing_scope": _stepfun_billing_scope(
-                    self.runtime_config.aura_model_provider,
-                    self.runtime_config.aura_model_base_url,
-                ),
                 "model_route": model_result.evidence.get("route", "hermes_agent"),
                 "streamed": True,
                 "speculative": speculative,
@@ -2335,17 +2325,6 @@ def _world_forbidden_reply_tokens(context: PersonaContext) -> tuple[str, ...]:
         if allow_location or allow_activity or allow_plan:
             return tuple(sorted(tokens, key=len, reverse=True))
     return tuple(sorted(tokens, key=len, reverse=True))
-
-
-def _stepfun_billing_scope(provider: str, base_url: str) -> str:
-    if str(provider or "").strip().lower() != "stepfun":
-        return ""
-    text = str(base_url or "").strip().lower()
-    if "step_plan" in text:
-        return "step_plan"
-    if "stepfun" in text:
-        return "open_platform"
-    return ""
 
 
 def _add_forbidden_token(tokens: set[str], value: Any) -> None:

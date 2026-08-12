@@ -2653,10 +2653,13 @@ static void handle_server_message(const char *json_str, int len)
             const cJSON *affinity_level = cJSON_GetObjectItem(payload, "affinity_level");
             const cJSON *coins = cJSON_GetObjectItem(payload, "coins");
             const cJSON *scene = cJSON_GetObjectItem(payload, "scene");
+            const cJSON *world_slot = cJSON_GetObjectItem(payload, "world_slot");
             const cJSON *outfit_mode = cJSON_GetObjectItem(payload, "outfit_mode");
             const cJSON *weather_temperature = cJSON_GetObjectItem(payload, "weather_temperature");
             const cJSON *weather_icon = cJSON_GetObjectItem(payload, "weather_icon");
+            const cJSON *weather_city = cJSON_GetObjectItem(payload, "weather_city");
             const cJSON *quota = cJSON_GetObjectItem(payload, "quota");
+            const cJSON *notes = cJSON_GetObjectItem(payload, "notes");
 
             if (mood && cJSON_IsNumber(mood))
                 g_state.mood = ws_clamp_companion_stat(mood->valueint);
@@ -2672,8 +2675,16 @@ static void handle_server_message(const char *json_str, int len)
                 g_state.coins = ws_clamp_beans(beans->valueint);
             if (coins && cJSON_IsNumber(coins))
                 g_state.coins = ws_clamp_beans(coins->valueint);
-            if (scene && cJSON_IsString(scene))
-                g_state.current_scene = msg_scene_to_index(scene->valuestring);
+            if (scene && cJSON_IsString(scene)) {
+                int next_scene = msg_scene_to_index(scene->valuestring);
+                if (next_scene != g_state.current_scene) {
+                    g_state.current_scene = next_scene;
+                    aura_ui_reset_idle_surface();
+                }
+            }
+            if (world_slot && cJSON_IsString(world_slot)) {
+                g_state.world_sleeping = strcmp(world_slot->valuestring, "sleep") == 0;
+            }
             if (outfit_mode && cJSON_IsString(outfit_mode)) {
                 if (strcmp(outfit_mode->valuestring, "sleepwear") == 0) {
                     g_state.world_sleepwear_requested = true;
@@ -2687,10 +2698,29 @@ static void handle_server_message(const char *json_str, int len)
              * server speaks the same numeric outfit protocol. Do not let the
              * legacy string field ("default"/"sleepwear_basic") overwrite
              * user-selected shop outfits on every status_update. */
-            if (weather_temperature && cJSON_IsNumber(weather_temperature))
+            if (weather_temperature && cJSON_IsNumber(weather_temperature)) {
                 g_state.temperature = (float)weather_temperature->valuedouble;
-            if (weather_icon && cJSON_IsNumber(weather_icon))
+                g_state.weather_valid = true;
+            }
+            if (weather_icon && cJSON_IsNumber(weather_icon)) {
                 g_state.weather_icon = weather_icon->valueint;
+                g_state.weather_valid = true;
+            }
+            if (weather_city && cJSON_IsString(weather_city)) {
+                strlcpy(g_state.weather_city, weather_city->valuestring,
+                        sizeof(g_state.weather_city));
+            }
+            if (notes && cJSON_IsArray(notes)) {
+                for (int i = 0; i < 3; ++i) {
+                    const cJSON *note = cJSON_GetArrayItem(notes, i);
+                    if (note && cJSON_IsString(note)) {
+                        strlcpy(g_state.info_notes[i], note->valuestring,
+                                sizeof(g_state.info_notes[i]));
+                    } else {
+                        g_state.info_notes[i][0] = '\0';
+                    }
+                }
+            }
 
             if (quota && cJSON_IsObject(quota)) {
                 const cJSON *provider = cJSON_GetObjectItem(quota, "provider");

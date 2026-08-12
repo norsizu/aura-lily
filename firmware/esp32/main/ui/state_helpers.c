@@ -3,8 +3,11 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "esp_timer.h"
+#include "esp_log.h"
 
 static portMUX_TYPE s_ui_state_mux = portMUX_INITIALIZER_UNLOCKED;
+#define INFO_BOARD_IDLE_DELAY_MS (5LL * 60LL * 1000LL)
 
 static void copy_text(char *dst, size_t dst_size, const char *src)
 {
@@ -191,6 +194,16 @@ void aura_ui_set_ws_connected(bool connected)
     portEXIT_CRITICAL(&s_ui_state_mux);
 }
 
+void aura_ui_reset_idle_surface(void)
+{
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    portENTER_CRITICAL(&s_ui_state_mux);
+    g_state.idle_since_ms = now_ms;
+    g_state.info_board_visible = false;
+    g_state.dirty = true;
+    portEXIT_CRITICAL(&s_ui_state_mux);
+}
+
 bool aura_ui_copy_and_clear_dirty(aura_state_t *snapshot)
 {
     bool should_draw = false;
@@ -209,9 +222,12 @@ bool aura_ui_copy_and_clear_dirty(aura_state_t *snapshot)
 bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snapshot)
 {
     bool should_draw = false;
+    bool board_became_visible = false;
     if (!snapshot) return false;
 
     portENTER_CRITICAL(&s_ui_state_mux);
+
+    const int64_t now_ms = esp_timer_get_time() / 1000;
 
     if (g_state.ui_mode == AURA_UI_LISTENING) {
         clear_dialogue_locked();
@@ -243,6 +259,25 @@ bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snap
         g_state.dirty = true;
     }
 
+    const bool truly_idle =
+        g_state.ui_mode == AURA_UI_IDLE &&
+        g_state.dialogue_ticks_left <= 0 &&
+        !g_state.agent_panel_visible;
+    if (!truly_idle) {
+        g_state.idle_since_ms = 0;
+        g_state.info_board_visible = false;
+    } else {
+        if (g_state.idle_since_ms <= 0) {
+            g_state.idle_since_ms = now_ms;
+        }
+        if (!g_state.info_board_visible &&
+            now_ms - g_state.idle_since_ms >= INFO_BOARD_IDLE_DELAY_MS) {
+            g_state.info_board_visible = true;
+            g_state.dirty = true;
+            board_became_visible = true;
+        }
+    }
+
     if (g_state.dirty) {
         memcpy(snapshot, &g_state, sizeof(*snapshot));
         g_state.dirty = false;
@@ -250,5 +285,9 @@ bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snap
     }
 
     portEXIT_CRITICAL(&s_ui_state_mux);
+
+    if (board_became_visible) {
+        ESP_LOGI("ui", "Idle settled for 5 minutes -> information board");
+    }
     return should_draw;
 }

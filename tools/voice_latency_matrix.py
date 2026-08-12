@@ -34,17 +34,15 @@ PROFILES: dict[str, Profile] = {
     "baseline": Profile(
         name="baseline",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "6",
             "AURA_TTS_WS_CHUNK_BYTES": "2048",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
         },
-        note="current tuned baseline: warm WS, 6-char first segment, 2048-byte audio chunks",
+        note="current baseline: 6-char first segment and 2048-byte audio chunks",
     ),
     "first4": Profile(
         name="first4",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "4",
             "AURA_TTS_WS_CHUNK_BYTES": "2048",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
@@ -54,7 +52,6 @@ PROFILES: dict[str, Profile] = {
     "first8": Profile(
         name="first8",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "8",
             "AURA_TTS_WS_CHUNK_BYTES": "2048",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
@@ -64,7 +61,6 @@ PROFILES: dict[str, Profile] = {
     "chunk1024": Profile(
         name="chunk1024",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "6",
             "AURA_TTS_WS_CHUNK_BYTES": "1024",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
@@ -74,7 +70,6 @@ PROFILES: dict[str, Profile] = {
     "chunk4096": Profile(
         name="chunk4096",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "6",
             "AURA_TTS_WS_CHUNK_BYTES": "4096",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
@@ -84,22 +79,11 @@ PROFILES: dict[str, Profile] = {
     "pacing-off": Profile(
         name="pacing-off",
         env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "1",
             "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "6",
             "AURA_TTS_WS_CHUNK_BYTES": "2048",
             "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "0",
         },
         note="control run; pacing often has zero sleep in current logs",
-    ),
-    "warm-off": Profile(
-        name="warm-off",
-        env={
-            "AURA_TTS_STEPFUN_WS_WARM_ENABLED": "0",
-            "AURA_BRIDGE_STREAM_FIRST_SEGMENT_CHARS": "6",
-            "AURA_TTS_WS_CHUNK_BYTES": "2048",
-            "AURA_TTS_AUDIO_SEND_PACING_ENABLED": "1",
-        },
-        note="control run to prove warm session value",
     ),
 }
 
@@ -135,7 +119,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--user-timezone", default="")
     parser.add_argument("--user-latitude", default="")
     parser.add_argument("--user-longitude", default="")
-    parser.add_argument("--fake-streaming-asr-speech-stop", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only.")
     parser.add_argument("--keep-going", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
@@ -169,10 +152,6 @@ def benchmark_command(args: argparse.Namespace) -> list[str]:
     ]
     if args.mode == "voice-sim":
         command.extend(["--bridge-url", args.bridge_url])
-        if args.fake_streaming_asr_speech_stop:
-            command.append("--fake-streaming-asr-speech-stop")
-        else:
-            command.append("--no-fake-streaming-asr-speech-stop")
     else:
         command.extend([
             "--ws-url",

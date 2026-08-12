@@ -16,6 +16,7 @@
 #include "layout.h"
 #include "status_bar.h"
 #include "panels.h"
+#include "panels_info_board.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
@@ -397,6 +398,13 @@ static bool render_character_path(const char *path, int pose)
 static void render_ui(const aura_state_t *state)
 {
     status_bar_draw(s_graybuf, RLCD_WIDTH, state);
+    if (state->info_board_visible &&
+        state->ui_mode == AURA_UI_IDLE &&
+        state->dialogue_ticks_left <= 0 &&
+        !state->agent_panel_visible) {
+        panels_draw_info_board(s_graybuf, RLCD_WIDTH, RLCD_HEIGHT, state);
+        return;
+    }
     panels_draw_left(s_graybuf, RLCD_WIDTH, RLCD_HEIGHT, state);
     panels_draw_right(s_graybuf, RLCD_WIDTH, RLCD_HEIGHT, state);
     panels_draw_dialogue(s_graybuf, RLCD_WIDTH, RLCD_HEIGHT, state);

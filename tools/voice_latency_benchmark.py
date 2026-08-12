@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from integrations.aura_persona_gateway.llm import DirectLlmClient, DirectLlmConfig
-from integrations.aura_persona_gateway.runtime import load_aura_runtime_config, voice_latency_path
+from integrations.aura_persona_gateway.runtime import load_aura_runtime_config
 from integrations.aura_persona_gateway.config import PersonaGatewayConfig
 from integrations.aura_persona_gateway.store import LilyPersonaStore
 from integrations.aura_persona_gateway.turn import AuraPersonaGateway
@@ -51,7 +51,6 @@ from integrations.hermes_lily_cli.gateway import (
     synthesize_tts,
     merge_deferred_local_preface_for_tts,
 )
-from integrations.hermes_lily_cli import gateway as gateway_module
 from websockets.asyncio.client import connect as ws_connect
 
 
@@ -196,51 +195,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-ms", type=int, default=900, help="voice-sim uploaded PCM duration.")
     parser.add_argument("--frame-ms", type=int, default=40, help="voice-ws PCM frame duration.")
     parser.add_argument("--audio-format", choices=["pcm", "opus"], default="pcm", help="voice-ws upload format.")
-    parser.add_argument("--warm-tts-ms", type=int, default=0, help="persona-stream-tts: pre-open StepFun TTS WS this many milliseconds before the turn.")
     parser.add_argument("--user-city", default="", help="Inject user_geo.city into simulated voice turns.")
     parser.add_argument("--user-timezone", default="", help="Inject user_geo.timezone into simulated voice turns.")
     parser.add_argument("--user-latitude", default="", help="Inject user_geo.latitude into simulated voice turns.")
     parser.add_argument("--user-longitude", default="", help="Inject user_geo.longitude into simulated voice turns.")
-    parser.add_argument("--open-platform-temporary", action="store_true", help="Temporarily benchmark StepFun /v1 Open Platform ASR/LLM/TTS without saving runtime config.")
     parser.add_argument("--model", default="", help="Temporarily override Aura LLM model for benchmark only.")
     parser.add_argument("--tts-model", default="", help="Temporarily override TTS model for benchmark only.")
     parser.add_argument("--max-tokens", type=int, default=0, help="Temporarily override Aura LLM max tokens for benchmark only.")
     parser.add_argument("--realtime-upload", action=argparse.BooleanOptionalAction, default=True, help="voice-ws sleeps between frames like a real device.")
-    parser.add_argument("--fake-streaming-asr", action="store_true", help="Use a fake StepFun WS ASR server for voice-sim.")
-    parser.add_argument("--fake-streaming-asr-early-final", action="store_true", help="Fake ASR final immediately after the first audio append, before client stop.")
-    parser.add_argument("--fake-streaming-asr-speech-stop", action="store_true", help="Fake ASR partial text followed by speech_stopped before client stop.")
     parser.add_argument("--json", action="store_true", help="Print JSON only.")
     return parser.parse_args()
 
 
 def runtime_for_benchmark(runtime_config: Any, args: argparse.Namespace) -> Any:
     updates: dict[str, Any] = {}
-    if args.open_platform_temporary:
-        key = (
-            str(getattr(runtime_config, "aura_model_api_key", "") or "").strip()
-            or str(getattr(runtime_config, "tts_api_key", "") or "").strip()
-            or str(getattr(runtime_config, "asr_api_key", "") or "").strip()
-        )
-        updates.update({
-            "aura_model_mode": "aura_model",
-            "aura_model_provider": "stepfun",
-            "aura_model_model": "stepaudio-2.5-chat",
-            "aura_model_base_url": "https://api.stepfun.com/v1",
-            "aura_model_api_key": key,
-            "aura_model_reasoning_effort": "",
-            "aura_model_max_tokens": 96,
-            "tts_enabled": True,
-            "tts_provider": "stepfun",
-            "tts_model": "stepaudio-2.5-tts",
-            "tts_base_url": "https://api.stepfun.com/v1",
-            "tts_api_key": key,
-            "asr_enabled": True,
-            "asr_mode": "api",
-            "asr_provider": "stepfun",
-            "asr_model": "stepaudio-2.5-asr-stream",
-            "asr_base_url": "https://api.stepfun.com/v1",
-            "asr_api_key": key,
-        })
     if args.model:
         updates["aura_model_model"] = str(args.model).strip()
     if args.tts_model:
@@ -522,7 +490,6 @@ async def run_persona_stream_tts_once(
     *,
     persona_home: str,
     user_geo: dict[str, Any] | None = None,
-    warm_tts_ms: int = 0,
 ) -> dict[str, Any]:
     started = time.monotonic()
     ws = CaptureWebsocket()
@@ -569,10 +536,6 @@ async def run_persona_stream_tts_once(
             turn_trigger_ms=1,
             metadata=metadata,
         )
-        warm_ms = max(0, int(warm_tts_ms or 0))
-        if warm_ms:
-            await gateway_module.maybe_start_stepfun_tts_warm_session(ws, state, runtime_config, reason="benchmark")
-            await asyncio.sleep(warm_ms / 1000)
         ok = await stream_dialogue_and_tts_from_bridge(
             ws,
             GatewayConfig(host="127.0.0.1", port=0, bridge_url="local-persona-stream", bridge_timeout_seconds=90),
@@ -585,8 +548,6 @@ async def run_persona_stream_tts_once(
     summary["mode"] = "persona-stream-tts"
     summary["ok"] = bool(summary.get("audio_bytes") and (summary.get("timing") or {}).get("status") == "ok")
     summary["total_ms"] = elapsed_ms(started)
-    if warm_tts_ms:
-        summary["warm_tts_ms"] = max(0, int(warm_tts_ms or 0))
     if user_geo:
         summary["user_geo"] = dict(user_geo)
     return summary
@@ -754,7 +715,6 @@ async def run_persona_llm_once(
     runtime = debug.get("aura_runtime") if isinstance(debug.get("aura_runtime"), dict) else {}
     voice_turn = final_payload.get("voice_turn") if isinstance(final_payload.get("voice_turn"), dict) else {}
     voice_debug = voice_turn.get("debug") if isinstance(voice_turn.get("debug"), dict) else {}
-    billing = voice_latency_path(runtime_config)
     result = {
         "mode": "persona-llm",
         "ok": bool(final_payload.get("ok")),
@@ -768,7 +728,6 @@ async def run_persona_llm_once(
         "quality_guard": quality_guard,
         "llm_model": runtime_config.aura_model_model,
         "llm_provider": runtime_config.aura_model_provider,
-        "llm_billing_scope": billing.get("llm_billing_scope", ""),
         "persona_context_build_ms": int(evidence.get("persona_context_build_ms") or context.get("context_build_ms") or 0),
         "persona_turn_latency_ms": int(evidence.get("persona_turn_latency_ms") or final_payload.get("latency_ms") or 0),
         "first_delta_ms": first_delta_ms,
@@ -821,7 +780,6 @@ async def run_tts_only_once(runtime_config: Any, text: str) -> dict[str, Any]:
         is_final=True,
     )
     summary = summarize_ws_frames(ws, ok=result.ok)
-    billing = voice_latency_path(runtime_config)
     return {
         "mode": "tts-only",
         "ok": bool(result.ok and summary.get("audio_bytes")),
@@ -829,7 +787,6 @@ async def run_tts_only_once(runtime_config: Any, text: str) -> dict[str, Any]:
         "tts_provider": runtime_config.tts_provider,
         "tts_model": runtime_config.tts_model,
         "tts_voice": runtime_config.tts_voice,
-        "tts_billing_scope": billing.get("tts_billing_scope", ""),
         "first_audio_sent_ms": int(summary.get("first_audio_sent_ms") or 0),
         "final_audio_frame_ms": int(summary.get("final_audio_frame_ms") or 0),
         "tts_first_chunk_ms": int(result.first_chunk_ms or 0),
@@ -1073,24 +1030,10 @@ def evaluate_local_quality(case_name: str, result: dict[str, Any], decision_path
 
 
 class SimulatedDeviceWebsocket(CaptureWebsocket):
-    def __init__(
-        self,
-        incoming: list[Any],
-        *,
-        stop_after_server_vad: bool = False,
-        wait_after_stop: bool = False,
-        stop_timeout: float = 5.0,
-        done_timeout: float = 12.0,
-    ) -> None:
+    def __init__(self, incoming: list[Any]) -> None:
         super().__init__()
         self.incoming = incoming
         self.remote_address = ("127.0.0.1", 43210)
-        self.stop_after_server_vad = stop_after_server_vad
-        self.wait_after_stop = wait_after_stop
-        self.stop_timeout = stop_timeout
-        self.done_timeout = done_timeout
-        self.server_vad_stop_event = asyncio.Event()
-        self.turn_done_event = asyncio.Event()
 
     def __aiter__(self) -> "SimulatedDeviceWebsocket":
         return self
@@ -1099,92 +1042,11 @@ class SimulatedDeviceWebsocket(CaptureWebsocket):
         if not self.incoming:
             raise StopAsyncIteration
         item = self.incoming.pop(0)
-        if item == "__wait_server_vad_stop__":
-            try:
-                await asyncio.wait_for(self.server_vad_stop_event.wait(), timeout=self.stop_timeout)
-            except asyncio.TimeoutError:
-                pass
-            if not self.incoming:
-                raise StopAsyncIteration
-            item = self.incoming.pop(0)
-        if item == "__wait_turn_done__":
-            try:
-                await asyncio.wait_for(self.turn_done_event.wait(), timeout=self.done_timeout)
-            except asyncio.TimeoutError:
-                pass
-            raise StopAsyncIteration
         await asyncio.sleep(0)
         return item
 
-    async def send(self, payload: Any) -> None:
-        await super().send(payload)
-        if self.stop_after_server_vad and isinstance(payload, str):
-            try:
-                item = json.loads(payload)
-            except json.JSONDecodeError:
-                return
-            body = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-            if body.get("action") == "server_vad_stop":
-                self.server_vad_stop_event.set()
-            if body.get("action") == "turn_audio_timing" or item.get("type") == "dialogue":
-                self.turn_done_event.set()
-
     async def close(self, code: int = 1000, reason: str = "") -> None:
         return None
-
-
-class FakeStepfunAsrSocket:
-    def __init__(self, transcript: str, *, early_final: bool = False, speech_stop: bool = False) -> None:
-        self.transcript = transcript
-        self.early_final = early_final
-        self.speech_stop = speech_stop
-        self.sent: list[dict[str, Any]] = []
-        self.recv_queue: asyncio.Queue[str] = asyncio.Queue()
-
-    async def send(self, payload: str) -> None:
-        item = json.loads(payload)
-        self.sent.append(item)
-        if (self.early_final or self.speech_stop) and item.get("type") == "input_audio_buffer.append":
-            event_type = (
-                "conversation.item.input_audio_transcription.delta"
-                if self.speech_stop
-                else "conversation.item.input_audio_transcription.completed"
-            )
-            self.recv_queue.put_nowait(json.dumps({
-                "type": event_type,
-                "text": self.transcript,
-            }, ensure_ascii=False))
-            if self.speech_stop:
-                self.recv_queue.put_nowait(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
-        elif item.get("type") == "input_audio_buffer.commit":
-            self.recv_queue.put_nowait(json.dumps({
-                "type": "conversation.item.input_audio_transcription.completed",
-                "text": self.transcript,
-            }, ensure_ascii=False))
-
-    async def recv(self) -> str:
-        return await self.recv_queue.get()
-
-
-class FakeStepfunAsrConnect:
-    def __init__(
-        self,
-        url: str,
-        *,
-        transcript: str,
-        early_final: bool = False,
-        speech_stop: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        self.url = url
-        self.kwargs = kwargs
-        self.socket = FakeStepfunAsrSocket(transcript, early_final=early_final, speech_stop=speech_stop)
-
-    async def __aenter__(self) -> FakeStepfunAsrSocket:
-        return self.socket
-
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
-        return False
 
 
 async def run_voice_sim_once(
@@ -1194,41 +1056,8 @@ async def run_voice_sim_once(
     bridge_url: str,
     timeout: float,
     audio_ms: int,
-    fake_streaming_asr: bool,
-    fake_streaming_asr_early_final: bool,
-    fake_streaming_asr_speech_stop: bool,
     user_geo: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if fake_streaming_asr or fake_streaming_asr_early_final or fake_streaming_asr_speech_stop:
-        runtime_config = replace(
-            runtime_config,
-            asr_enabled=True,
-            asr_mode="api",
-            asr_provider="stepfun",
-            asr_model="stepaudio-2.5-asr-stream",
-            asr_base_url="https://api.stepfun.com/v1",
-            asr_api_key="fake-stepfun-asr-key",
-        )
-    original_ws_connect = gateway_module.ws_connect
-    original_load_runtime = gateway_module.load_runtime_config_for_gateway
-    fake_connections: list[FakeStepfunAsrConnect] = []
-    if fake_streaming_asr or fake_streaming_asr_early_final or fake_streaming_asr_speech_stop:
-        def fake_ws_connect(url: str, **kwargs: Any):
-            if "realtime/asr/stream" in str(url):
-                conn = FakeStepfunAsrConnect(
-                    url,
-                    transcript=text,
-                    early_final=bool(fake_streaming_asr_early_final),
-                    speech_stop=bool(fake_streaming_asr_speech_stop),
-                    **kwargs,
-                )
-                fake_connections.append(conn)
-                return conn
-            return original_ws_connect(url, **kwargs)
-
-        gateway_module.ws_connect = fake_ws_connect
-        gateway_module.load_runtime_config_for_gateway = lambda: runtime_config
-
     sample_count = max(1, int(DEVICE_SAMPLE_RATE * max(20, audio_ms) / 1000))
     pcm = b"".join((1200 if index % 2 == 0 else -1200).to_bytes(2, "little", signed=True) for index in range(sample_count))
     start_payload: dict[str, Any] = {"turn_id": 1, "server_vad": False}
@@ -1242,38 +1071,16 @@ async def run_voice_sim_once(
         "payload": start_payload,
     }, ensure_ascii=False)
     stop = json.dumps({"type": "stop", "payload": {"turn_id": 1}}, ensure_ascii=False)
-    incoming: list[Any] = [start, pcm]
-    if fake_streaming_asr_early_final or fake_streaming_asr_speech_stop:
-        incoming.append("__wait_server_vad_stop__")
-    incoming.append(stop)
-    if fake_streaming_asr_early_final or fake_streaming_asr_speech_stop:
-        incoming.append("__wait_turn_done__")
-    ws = SimulatedDeviceWebsocket(
-        incoming,
-        stop_after_server_vad=bool(fake_streaming_asr_early_final or fake_streaming_asr_speech_stop),
-        wait_after_stop=bool(fake_streaming_asr_early_final or fake_streaming_asr_speech_stop),
-        stop_timeout=5.0 if fake_streaming_asr_early_final else 0.2 if fake_streaming_asr_speech_stop else 5.0,
-    )
+    ws = SimulatedDeviceWebsocket([start, pcm, stop])
     config = GatewayConfig(host="127.0.0.1", port=0, bridge_url=bridge_url, bridge_timeout_seconds=timeout)
-    try:
-        await handle_connection(ws, config)
-    finally:
-        gateway_module.ws_connect = original_ws_connect
-        gateway_module.load_runtime_config_for_gateway = original_load_runtime
+    await handle_connection(ws, config)
     summary = summarize_ws_frames(ws, ok=True)
     timing = summary.get("timing") if isinstance(summary.get("timing"), dict) else {}
     summary["ok"] = bool(summary.get("audio_bytes") and timing.get("status") == "ok")
     summary["mode"] = "voice-sim"
-    summary["fake_streaming_asr"] = bool(fake_streaming_asr or fake_streaming_asr_early_final or fake_streaming_asr_speech_stop)
-    summary["fake_streaming_asr_early_final"] = bool(fake_streaming_asr_early_final)
-    summary["fake_streaming_asr_speech_stop"] = bool(fake_streaming_asr_speech_stop)
     summary["sim_audio_ms"] = max(20, audio_ms)
     if user_geo:
         summary["user_geo"] = dict(user_geo)
-    summary["asr_ws_sent_types"] = (
-        [item.get("type") for item in fake_connections[0].socket.sent]
-        if fake_connections else []
-    )
     return summary
 
 
@@ -1733,7 +1540,6 @@ async def main_async() -> int:
                     text,
                     persona_home=args.persona_home,
                     user_geo=user_geo,
-                    warm_tts_ms=args.warm_tts_ms,
                 )
             elif args.mode == "voice-sim":
                 result = await run_voice_sim_once(
@@ -1742,9 +1548,6 @@ async def main_async() -> int:
                     bridge_url=args.bridge_url,
                     timeout=args.timeout,
                     audio_ms=args.audio_ms,
-                    fake_streaming_asr=bool(args.fake_streaming_asr),
-                    fake_streaming_asr_early_final=bool(args.fake_streaming_asr_early_final),
-                    fake_streaming_asr_speech_stop=bool(args.fake_streaming_asr_speech_stop),
                     user_geo=user_geo,
                 )
             elif args.mode == "voice-ws":

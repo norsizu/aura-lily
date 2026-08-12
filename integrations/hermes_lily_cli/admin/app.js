@@ -329,20 +329,17 @@ function populateAsrPresetSelect(currentConfig = {}) {
 
 function ttsGroup(item) {
   if (item.id === "none") return "关闭";
-  if (item.id === "edge" || item.id === "voxcpm-aura") return "本地/免密钥";
-  if (item.billing_scope === "step_plan") return "StepFun Step Plan";
-  if (item.billing_scope === "open_platform") return "非 Plan 备用";
-  if (item.id === "minimax") return "国内主流";
+  if (item.group) return item.group;
+  if (item.id === "voxcpm-aura") return "本地/免密钥";
   if (item.id === "custom" || item.id === "custom-http") return "自定义";
-  return "国际/自定义";
+  return "其他";
 }
 
 function asrGroup(item) {
+  if (item.group) return item.group;
   if (item.mode === "local" || item.provider === "local") return "本地模型";
-  if (item.billing_scope === "step_plan") return "StepFun Step Plan";
-  if (item.billing_scope === "open_platform") return "非 Plan 备用";
   if (item.id === "custom") return "自定义";
-  return "API 供应商";
+  return "其他";
 }
 
 function fillModelList(listId, models) {
@@ -360,16 +357,37 @@ function presetHint(preset) {
   if (!preset) return "";
   const keyText = preset.requires_api_key ? "需要 API Key" : "通常不需要 API Key";
   const urlText = preset.requires_base_url ? "，需要 Base URL" : "";
-  const scopeText = preset.billing_scope === "step_plan"
-    ? " · Step Plan 订阅内"
-    : preset.billing_scope === "open_platform"
-    ? " · 非 Step Plan 路由"
-    : "";
   const recommendedText = preset.recommended ? " · 推荐" : "";
   const routeText = preset.route ? ` · 路由 ${preset.route}` : "";
   const streamText = preset.streaming === true ? " · 实时流式" : preset.streaming === false ? " · 非实时流式" : "";
   const description = preset.description ? ` ${preset.description}` : "";
-  return `${preset.label || preset.id}：${keyText}${urlText}${scopeText}${recommendedText}${routeText}${streamText}。${description}`;
+  return `${preset.label || preset.id}：${keyText}${urlText}${recommendedText}${routeText}${streamText}。${description}`;
+}
+
+function parseProviderOptions(id) {
+  const raw = $(id).value.trim();
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    throw new Error(`${id === "ttsProviderOptions" ? "TTS" : "ASR"} Provider Options 必须是 JSON 对象。`);
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error(`${id === "ttsProviderOptions" ? "TTS" : "ASR"} Provider Options 必须是 JSON 对象。`);
+  }
+  return parsed;
+}
+
+function providerOptionsText(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) return "";
+  return JSON.stringify(options, null, 2);
+}
+
+function providerOptionsHint(preset, options) {
+  const keys = Object.keys(options || {});
+  const saved = keys.length ? `已保存字段：${keys.join("、")}` : "未填写额外字段";
+  return preset?.description ? `${saved}。${preset.description}` : saved;
 }
 
 function refreshPresetModels(applyDefaults = true) {
@@ -417,6 +435,7 @@ function refreshTtsPreset(applyDefaults = true) {
     if (Array.isArray(preset.voices) && preset.voices.length) val("ttsVoice", preset.voices[0]);
   }
   $("ttsHint").textContent = presetHint(preset);
+  $("ttsOptionsHint").textContent = providerOptionsHint(preset, parseProviderOptionsSafely("ttsProviderOptions"));
 }
 
 function refreshAsrPreset(applyDefaults = true) {
@@ -433,7 +452,16 @@ function refreshAsrPreset(applyDefaults = true) {
     if (Array.isArray(preset.models) && preset.models.length) val("asrModel", preset.models[0]);
   }
   $("asrHint").textContent = presetHint(preset);
+  $("asrOptionsHint").textContent = providerOptionsHint(preset, parseProviderOptionsSafely("asrProviderOptions"));
   updateAsrModeVisibility();
+}
+
+function parseProviderOptionsSafely(id) {
+  try {
+    return parseProviderOptions(id);
+  } catch (_) {
+    return {};
+  }
 }
 
 function maskInput(id, configured, emptyText) {
@@ -621,24 +649,17 @@ function fillDashboard(summary) {
   const auraName = aura.aura_model_mode === "aura_model"
     ? [aura.aura_model_provider, aura.aura_model_model].filter(Boolean).join(" / ") || "Aura LLM 未完整配置"
     : hermesName;
-  const latency = aura.voice_latency_path || {};
   $("dashAuraMode").textContent = `${auraMode}: ${auraName}`;
   $("dashAuraTts").textContent = [
-    latency.llm_label || auraMode,
-    latency.tts_label || (aura.tts_enabled ? `TTS: ${aura.tts_provider || "custom"}` : "TTS 未启用"),
+    auraMode,
+    aura.tts_enabled ? `TTS: ${aura.tts_provider || "custom"}` : "TTS 未启用",
   ].filter(Boolean).join(" · ");
 
   const asrName = aura.asr_enabled ? [aura.asr_provider, aura.asr_model].filter(Boolean).join(" / ") || "ASR 已启用" : "ASR 未启用";
   $("dashAsr").textContent = asrName;
-  $("dashAsrPath").textContent = latency.step_plan_realtime_ready
-    ? latency.step_plan_summary || "Step Plan Realtime 实验直连已启用"
-    : latency.step_plan_realtime_configured
-    ? latency.step_plan_summary || "Step Plan Realtime 已配置但未启用直连"
-    : latency.xiaozhi_style_ready
-    ? "小智式 ASR/LLM/TTS 三段流式已就绪"
-    : latency.step_plan_covered
-    ? latency.step_plan_summary || "Step Plan ASR/LLM/TTS 已覆盖，走订阅内安全闭环"
-    : latency.summary || latency.asr_label || (aura.asr_mode === "api" ? "API / 本机 HTTP" : "本地命令");
+  $("dashAsrPath").textContent = aura.asr_enabled
+    ? (aura.asr_mode === "api" ? "API / 本机 HTTP" : "本地命令")
+    : "未启用";
 
   $("dashPersona").textContent = persona.enabled ? "已启用" : "未启用";
   $("dashPersonaScope").textContent = [persona.platform, persona.chat_id, persona.user_id].filter(Boolean).join(" / ");
@@ -743,6 +764,7 @@ function fillAuraRuntime(config) {
   val("ttsFormat", config.tts_format || "pcm");
   val("ttsSampleRate", config.tts_sample_rate || 24000);
   val("ttsTimeout", config.tts_timeout_seconds || 15);
+  val("ttsProviderOptions", providerOptionsText(config.tts_provider_options));
   val("ttsProfileName", "");
   bool("asrEnabled", config.asr_enabled);
   val("asrMode", config.asr_mode || "api");
@@ -754,6 +776,7 @@ function fillAuraRuntime(config) {
   $("showAsrKey").textContent = "查看";
   val("asrLanguage", config.asr_language || "zh");
   val("asrTimeout", config.asr_timeout_seconds || 30);
+  val("asrProviderOptions", providerOptionsText(config.asr_provider_options));
   val("asrProfileName", "");
   $("auraRuntimePath").textContent = config.runtime_config_path || "未配置 Aura runtime JSON";
 
@@ -1093,6 +1116,7 @@ function auraRuntimePayload(extra = {}) {
     tts_format: $("ttsFormat").value.trim(),
     tts_sample_rate: num("ttsSampleRate"),
     tts_timeout_seconds: num("ttsTimeout"),
+    tts_provider_options: parseProviderOptions("ttsProviderOptions"),
     asr_enabled: $("asrEnabled").checked,
     asr_mode: $("asrMode").value,
     asr_provider: $("asrProvider").value.trim(),
@@ -1101,6 +1125,7 @@ function auraRuntimePayload(extra = {}) {
     asr_api_key: $("asrApiKey").value.trim(),
     asr_language: $("asrLanguage").value.trim(),
     asr_timeout_seconds: num("asrTimeout"),
+    asr_provider_options: parseProviderOptions("asrProviderOptions"),
     ...extra,
   };
 }
@@ -1138,109 +1163,6 @@ async function testAsr() {
   const payload = await testApi("/admin/test/asr");
   setTestResult("asrTestResult", payload, payload.ok);
   setStatus("auraRuntimeStatus", payload.ok ? "ASR 测试通过。" : "ASR 测试失败。", payload.ok);
-}
-
-async function applyStepPlanAsrPreset() {
-  const preset = asrPresets.find((item) => item.id === "stepfun-step-plan");
-  if (!preset) throw new Error("未找到 StepFun Step Plan ASR preset。");
-  val("asrPreset", preset.id);
-  bool("asrEnabled", true);
-  val("asrMode", "api");
-  val("asrProvider", preset.provider || "stepfun");
-  val("asrBaseUrl", preset.base_url || "https://api.stepfun.com/step_plan/v1");
-  const model = Array.isArray(preset.models) && preset.models.length ? preset.models[0] : "stepaudio-2.5-asr";
-  val("asrModel", model);
-  if (!$("asrLanguage").value.trim()) val("asrLanguage", "zh");
-  refreshAsrPreset(false);
-  updateAsrModeVisibility();
-  const payload = await api("/admin/aura/runtime", {
-    method: "POST",
-    body: JSON.stringify(auraRuntimePayload()),
-  });
-  fillAuraRuntime(payload.config || {});
-  lastSummary.aura_runtime = payload.config || {};
-  fillDashboard(lastSummary);
-  const keyConfigured = Boolean(payload.config?.asr_api_key_configured);
-  setStatus(
-    "auraRuntimeStatus",
-    keyConfigured
-      ? "已套用 Step Plan ASR 兜底。可以点测试 ASR 验证 /audio/asr/sse。"
-      : "已套用 Step Plan ASR 兜底字段；还需要填写 ASR API Key，或点“复用已保存 StepFun Key 到 ASR”。",
-    keyConfigured,
-  );
-}
-
-async function applyStepPlanRealtimePreset() {
-  const preset = asrPresets.find((item) => item.id === "stepfun-step-plan-realtime");
-  if (!preset) throw new Error("未找到 StepFun Step Plan Realtime preset。");
-  val("asrPreset", preset.id);
-  bool("asrEnabled", true);
-  val("asrMode", "api");
-  val("asrProvider", preset.provider || "stepfun-realtime");
-  val("asrBaseUrl", preset.base_url || "https://api.stepfun.com/step_plan/v1");
-  const model = Array.isArray(preset.models) && preset.models.length ? preset.models[0] : "stepaudio-2.5-realtime";
-  val("asrModel", model);
-  if (!$("asrLanguage").value.trim()) val("asrLanguage", "zh");
-  refreshAsrPreset(false);
-  updateAsrModeVisibility();
-  const payload = await api("/admin/aura/runtime", {
-    method: "POST",
-    body: JSON.stringify(auraRuntimePayload()),
-  });
-  fillAuraRuntime(payload.config || {});
-  lastSummary.aura_runtime = payload.config || {};
-  fillDashboard(lastSummary);
-  const keyConfigured = Boolean(payload.config?.asr_api_key_configured);
-  setStatus(
-    "auraRuntimeStatus",
-    keyConfigured
-      ? "已套用实验 Step Plan Realtime。默认仍不会绕过 Aura/Lily；只有服务端设置 AURA_STEPFUN_REALTIME_DIRECT_REPLY_ENABLED=1 才会作为直连真机链路。"
-      : "已套用实验 Step Plan Realtime 字段；还需要填写 ASR Realtime API Key，或点“复用已保存 StepFun Key 到 ASR”。生产默认建议用 Plan ASR。",
-    keyConfigured,
-  );
-}
-
-async function applyXiaozhiAsrPreset() {
-  const preset = asrPresets.find((item) => item.id === "stepfun-stream");
-  if (!preset) throw new Error("未找到 StepFun 实时 ASR preset。");
-  val("asrPreset", preset.id);
-  bool("asrEnabled", true);
-  val("asrMode", "api");
-  val("asrProvider", preset.provider || "stepfun");
-  val("asrBaseUrl", preset.base_url || "https://api.stepfun.com/v1");
-  const model = Array.isArray(preset.models) && preset.models.length ? preset.models[0] : "stepaudio-2.5-asr-stream";
-  val("asrModel", model);
-  if (!$("asrLanguage").value.trim()) val("asrLanguage", "zh");
-  refreshAsrPreset(false);
-  updateAsrModeVisibility();
-  const payload = await api("/admin/aura/runtime", {
-    method: "POST",
-    body: JSON.stringify(auraRuntimePayload()),
-  });
-  fillAuraRuntime(payload.config || {});
-  lastSummary.aura_runtime = payload.config || {};
-  fillDashboard(lastSummary);
-  const keyConfigured = Boolean(payload.config?.asr_api_key_configured);
-  setStatus(
-    "auraRuntimeStatus",
-    keyConfigured
-      ? "已套用小智式语义流式：实时 ASR 只做听写，回复仍进入 Aura/Lily，再由 StepFun TTS 流式播放。"
-      : "已套用小智式语义流式字段；需要填写 ASR API Key，或点“复用已保存 StepFun Key 到 ASR”。",
-    keyConfigured,
-  );
-}
-
-async function applyStepfunOpenPlatformPreset() {
-  const payload = await api("/admin/aura/apply-stepfun-open-platform");
-  fillAuraRuntime(payload.config || {});
-  lastSummary.aura_runtime = payload.config || {};
-  fillDashboard(lastSummary);
-  const source = payload.source ? `（复用 Key 来源：${payload.source}）` : "";
-  setStatus(
-    "auraRuntimeStatus",
-    `已套用 StepFun Open Platform 小智式语义流式${source}。这是非 Step Plan 路由，会走 /v1 ASR/LLM/TTS；可以分别测试 Aura LLM、ASR、TTS。`,
-    true,
-  );
 }
 
 async function clearAuraModelKey() {
@@ -1325,15 +1247,6 @@ async function clearAsrKey() {
   lastSummary.aura_runtime = payload.config || {};
   fillDashboard(lastSummary);
   setStatus("auraRuntimeStatus", "ASR API Key 已清除。", true);
-}
-
-async function copyStepPlanKeyToAsr() {
-  const payload = await api("/admin/aura/copy-stepfun-plan-key");
-  fillAuraRuntime(payload.config || {});
-  lastSummary.aura_runtime = payload.config || {};
-  fillDashboard(lastSummary);
-  const source = payload.source ? `（来源：${payload.source}）` : "";
-  setStatus("auraRuntimeStatus", `已把保存的 StepFun Plan Key 写入 ASR${source}，默认套用 Step Plan ASR SSE；可以点测试 ASR 验证。`, true);
 }
 
 async function revealSecret(kind) {
@@ -1617,10 +1530,6 @@ wireButton("saveAuraRuntime", saveAuraRuntime, "auraRuntimeStatus");
 wireButton("testAuraModel", testAuraModel, "auraRuntimeStatus");
 wireButton("testTts", testTts, "auraRuntimeStatus");
 wireButton("testAsr", testAsr, "auraRuntimeStatus");
-wireButton("applyStepPlanRealtime", applyStepPlanRealtimePreset, "auraRuntimeStatus");
-wireButton("applyStepPlanAsr", applyStepPlanAsrPreset, "auraRuntimeStatus");
-wireButton("applyStepfunOpenPlatform", applyStepfunOpenPlatformPreset, "auraRuntimeStatus");
-wireButton("applyXiaozhiAsr", applyXiaozhiAsrPreset, "auraRuntimeStatus");
 wireButton("clearAuraModelKey", clearAuraModelKey, "auraRuntimeStatus");
 wireButton("clearAuraModelKeyBottom", clearAuraModelKey, "auraRuntimeStatus");
 wireButton("showAuraModelKey", () => revealSecret("auraModel"), "auraRuntimeStatus");
@@ -1633,7 +1542,6 @@ wireButton("touchCachedWeather", touchCachedWeather, "auraRuntimeStatus");
 wireButton("clearCachedWeather", clearCachedWeather, "auraRuntimeStatus");
 wireButton("clearTtsKey", clearTtsKey, "auraRuntimeStatus");
 wireButton("clearAsrKey", clearAsrKey, "auraRuntimeStatus");
-wireButton("copyStepPlanKeyToAsr", copyStepPlanKeyToAsr, "auraRuntimeStatus");
 wireButton("applyHistory", applyHistory, "auraRuntimeStatus");
 wireButton("applyTtsProfile", () => applyProfile("tts"), "auraRuntimeStatus");
 wireButton("saveTtsProfile", () => upsertProfile("tts"), "auraRuntimeStatus");

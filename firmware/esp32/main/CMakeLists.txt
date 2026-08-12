@@ -24,6 +24,7 @@ idf_component_register(
         "ui/layout.c"
         "ui/status_bar.c"
         "ui/panels.c"
+        "ui/panels_info_board.c"
         "ui/font.c"
         "ui/state_helpers.c"
         "input/buttons.c"

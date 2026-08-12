@@ -24,9 +24,9 @@ class PersonaScope:
 @dataclass(frozen=True)
 class PersonaGatewayConfig:
     enabled: bool = False
-    persona_home: str = "/data/aura-persona"
-    companion_home: str = "/data/aura-companion"
-    hermes_home: str = "/home/aura/.hermes"
+    persona_home: str = ".aura/persona"
+    companion_home: str = ".aura/companion"
+    hermes_home: str = ".aura/hermes"
     config_path: str = ""
     profile: str = "default"
     platform: str = "esp32"
@@ -156,8 +156,8 @@ def _config_from_env() -> PersonaGatewayConfig:
     legacy_admin_token = os.environ.get("AURA_LILY_ADMIN_TOKEN") or os.environ.get("AURA_PERSONA_ADMIN_TOKEN", "")
     return PersonaGatewayConfig(
         enabled=_env_bool("AURA_PERSONA_ENABLED", False),
-        persona_home=os.environ.get("AURA_PERSONA_HOME", "/data/aura-persona"),
-        companion_home=os.environ.get("AURA_COMPANION_HOME", "/data/aura-companion"),
+        persona_home=os.environ.get("AURA_PERSONA_HOME", ".aura/persona"),
+        companion_home=os.environ.get("AURA_COMPANION_HOME", ".aura/companion"),
         hermes_home=os.environ.get("HERMES_HOME", "/home/aura/.hermes"),
         config_path=os.environ.get("AURA_PERSONA_CONFIG_PATH", ""),
         platform=os.environ.get("AURA_PERSONA_PLATFORM", "esp32"),

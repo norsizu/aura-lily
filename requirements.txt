@@ -7,3 +7,5 @@ anthropic>=0.39
 # firecrawl/tavily 等付费后端的 key）时 web_search 工具不会注册，
 # agent 会说自己"没有联网工具"。
 ddgs>=9
+# Required only when selecting Qwen3-ASR in the optional cloud ASR pool.
+dashscope>=1.24,<2

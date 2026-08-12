@@ -29,6 +29,8 @@ typedef struct {
     int month;              // 1-12
     int day;                // 1-31
     int weather_icon;       // 0=sun, 1=cloud, 2=rain, 3=snow
+    char weather_city[32];
+    bool weather_valid;
 
     // 状态
     int mood;               // 0-100
@@ -40,6 +42,7 @@ typedef struct {
     bool companion_state_ready;
     bool world_outfit_mode_ready;
     bool world_sleepwear_requested;
+    bool world_sleeping;
     bool quota_ready;
     char quota_provider[20];
     char quota_headline[24];
@@ -51,6 +54,7 @@ typedef struct {
     char quota_secondary_label[8];
     char quota_secondary_text[24];
     int quota_secondary_percent;
+    char info_notes[3][64];
 
     // 网络
     int wifi_strength;      // 0-4, 0=无信号/未连接
@@ -67,6 +71,8 @@ typedef struct {
     int ui_language;        // 0=zh, 1=en, 2=ja
     aura_ui_mode_t ui_mode;
     int ui_anim_tick;       // 10fps 动画 tick
+    int64_t idle_since_ms;  // monotonic start of the current settled idle period
+    bool info_board_visible;
     int mic_level;          // 0-100, 录音强度
     bool agent_panel_visible;
     int agent_progress;     // 0-100

@@ -14,5 +14,6 @@ void aura_ui_set_agent_panel(bool visible, int progress,
                              const char *title, const char *status);
 void aura_ui_set_agent_visible(bool visible);
 void aura_ui_set_ws_connected(bool connected);
+void aura_ui_reset_idle_surface(void);
 bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snapshot);
 bool aura_ui_copy_and_clear_dirty(aura_state_t *snapshot);
