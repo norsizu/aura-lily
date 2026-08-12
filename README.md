@@ -92,7 +92,26 @@ Aura Lily gateway
 curl -s http://127.0.0.1:8765/health
 ```
 
-默认 HTTP/管理页面端口是 `8765`，ESP32 WebSocket 网关端口是 `8787`。通过 `http://<你的服务器地址>:8765/admin` 配置模型、ASR、TTS 和管理员密码；模型密钥保存在你的本地运行环境中，不会被公开仓库提供。
+#### 进入管理后台
+
+首次启动前，先复制配置文件并设置一个管理密码：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少设置：
+# AURA_LILY_ADMIN_USER=admin
+# AURA_LILY_ADMIN_PASSWORD=请替换为强密码
+```
+
+再启动服务：
+
+```bash
+.venv/bin/python tools/run_native.py
+```
+
+在部署这台电脑上打开 `http://127.0.0.1:8765/admin`；从局域网或公网访问时，打开 `http://<主机名或IP>:8765/admin`。用户名是 `AURA_LILY_ADMIN_USER`，密码是 `AURA_LILY_ADMIN_PASSWORD`。`8787` 只供设备连接 WebSocket 网关，不是管理后台端口。
+
+如果要从公网访问后台，请先配置 HTTPS 反向代理并限制来源 IP。不要在没有密码保护的情况下暴露管理端口。模型密钥仅保存在你的本地运行环境中，仓库不会提供任何密钥。
 
 ### 2. 打开可选世界层
 
@@ -123,7 +142,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 不安装 ESP-IDF 也可以直接刷写：
 
-1. 准备 Chrome 或 Edge、USB 数据线，并下载 [Release 中的完整 `.bin` 刷机包](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public)。
+1. 准备 Chrome 或 Edge、USB 数据线，并下载 [Release 中的完整 `.bin` 刷机包](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public)。
 2. 打开 [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)，点击顶部 **Connect**，选择设备的 USB 串口并授权。
 3. 切换到 **DIY**，把 Flash Address 改为 `0x0000`，选择下载的完整 `.bin` 文件。
 4. 点击 **Program**，等待进度完成；完成后在 Console 中重置设备，或拔插一次 USB。

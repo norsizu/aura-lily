@@ -92,7 +92,26 @@ Aura Lily は Docker を使わず、自分で管理できる PC、NAS、また�
 curl -s http://127.0.0.1:8765/health
 ```
 
-HTTP/管理画面の既定ポートは `8765`、ESP32 WebSocket ゲートウェイは `8787` です。`http://<your-server-address>:8765/admin` でモデル、ASR、TTS、管理者パスワードを設定します。モデルの認証情報はローカルの実行環境にのみ置き、このリポジトリからは提供されません。
+#### 管理画面を開く
+
+最初に設定例をコピーし、管理者パスワードを設定します。
+
+```bash
+cp .env.example .env
+# .env を編集し、少なくとも以下を設定します。
+# AURA_LILY_ADMIN_USER=admin
+# AURA_LILY_ADMIN_PASSWORD=strong-password-here
+```
+
+次にサービスを起動します。
+
+```bash
+.venv/bin/python tools/run_native.py
+```
+
+同じホストでは `http://127.0.0.1:8765/admin` を開きます。LAN またはインターネットからは `http://<host-or-ip>:8765/admin` を使います。ログイン名は `AURA_LILY_ADMIN_USER`、パスワードは `AURA_LILY_ADMIN_PASSWORD` です。`8787` は端末用 WebSocket ゲートウェイ専用であり、管理画面ではありません。
+
+管理画面をインターネットに公開する前に、HTTPS リバースプロキシを設定し、アクセス元 IP を制限してください。パスワードなしで管理ポートを公開しないでください。モデル認証情報はローカル実行環境にのみ保存され、このリポジトリからは提供されません。
 
 ### 2. 任意の世界レイヤーを有効にする
 
@@ -123,7 +142,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 最初の書き込みに ESP-IDF をインストールする必要はありません。
 
-1. Chrome または Edge と USB データケーブルを用意し、[Release の完全な `.bin` イメージ](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public)をダウンロードします。
+1. Chrome または Edge と USB データケーブルを用意し、[Release の完全な `.bin` イメージ](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public)をダウンロードします。
 2. [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)を開き、上部の **Connect** を押して、端末の USB シリアルポートを選択し、接続を許可します。
 3. **DIY** を開き、Flash Address を `0x0000` に変更して、ダウンロードした完全な `.bin` を選択します。
 4. **Program** を押して完了まで待ちます。Console タブからリセットするか、USB を一度抜き差しします。

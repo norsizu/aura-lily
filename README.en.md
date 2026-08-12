@@ -92,7 +92,26 @@ Verify it from another terminal:
 curl -s http://127.0.0.1:8765/health
 ```
 
-The default HTTP/admin port is `8765`; the ESP32 WebSocket gateway listens on `8787`. Configure models, ASR, TTS, and the admin password at `http://<your-server-address>:8765/admin`. Model credentials stay in your local runtime environment and are not supplied by this repository.
+#### Open the admin UI
+
+Before the first start, copy the example configuration and set an admin password:
+
+```bash
+cp .env.example .env
+# Edit .env and set at least:
+# AURA_LILY_ADMIN_USER=admin
+# AURA_LILY_ADMIN_PASSWORD=replace-with-a-strong-password
+```
+
+Then start the services:
+
+```bash
+.venv/bin/python tools/run_native.py
+```
+
+On the host machine, open `http://127.0.0.1:8765/admin`. From your LAN or the internet, use `http://<host-or-ip>:8765/admin`. Sign in with `AURA_LILY_ADMIN_USER` and `AURA_LILY_ADMIN_PASSWORD`. Port `8787` is only the device WebSocket gateway; it is not the admin UI.
+
+Before exposing the admin UI to the internet, put it behind an HTTPS reverse proxy and restrict source IPs. Never expose the admin port without a password. Model credentials remain in your local runtime environment and are never supplied by this repository.
 
 ### 2. Enable the optional world layer
 
@@ -123,7 +142,7 @@ Each Release includes the complete Web-flash image and its SHA-256 checksum. The
 
 You do not need to install ESP-IDF for a first flash:
 
-1. Use Chrome or Edge with a USB data cable, and download the [complete `.bin` image from the Release](https://github.com/norsizu/aura-lily/releases/tag/v0.16.13-public).
+1. Use Chrome or Edge with a USB data cable, and download the [complete `.bin` image from the Release](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public).
 2. Open [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/), click **Connect**, select the device USB serial port, and grant access.
 3. Open **DIY**, change Flash Address to `0x0000`, and choose the downloaded full `.bin` file.
 4. Click **Program** and wait for completion. Reset from the Console tab or unplug and reconnect the device.
