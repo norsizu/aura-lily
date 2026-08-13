@@ -8,7 +8,7 @@ Aura Lily is built for the Waveshare ESP32-S3-RLCD-4.2. It is not a chat window 
 
 ## Project scope
 
-Aura Lily is Aura's standalone, self-hosted lightweight edition for personal use and ESP32-S3 hardware. It keeps the core voice experience, character state, scenes, schedules, and configurable gateway, while leaving out private production services and some advanced capabilities from the complete Aura product. The complete Aura product is not planned as an open-source release.
+Aura Lily is an independent, open-source, self-hosted desk voice-companion project for personal deployments and ESP32-S3 hardware. The repository includes voice interaction, character state, scenes, schedules, and a configurable gateway for a computer, NAS, or server you control, while providing a base for hardware, interface, and character-resource development.
 
 ## Demo
 
@@ -180,6 +180,8 @@ python3 -m pytest -q tests
 Before publishing firmware, also run `idf.py build` and confirm that the application image fits a `0x280000` OTA partition.
 
 ## Community
+
+Open-source promotion and community link: [LINUX DO](https://linux.do/).
 
 For hardware ports, deployment, character assets, and self-hosting discussion, join the "Xianhua AI | Aura" QQ group: `951895791`.
 
