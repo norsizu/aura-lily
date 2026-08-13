@@ -142,7 +142,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 最初の書き込みに ESP-IDF をインストールする必要はありません。
 
-1. Chrome または Edge と USB データケーブルを用意し、[Release の完全な `.bin` イメージ](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public)をダウンロードします。
+1. Chrome または Edge と USB データケーブルを用意し、[最新 Release の完全な `.bin` イメージ](https://github.com/norsizu/aura-lily/releases/latest)をダウンロードします。
 2. [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)を開き、上部の **Connect** を押して、端末の USB シリアルポートを選択し、接続を許可します。
 3. **DIY** を開き、Flash Address を `0x0000` に変更して、ダウンロードした完全な `.bin` を選択します。
 4. **Program** を押して完了まで待ちます。Console タブからリセットするか、USB を一度抜き差しします。

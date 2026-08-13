@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 set(IDF_TARGET "esp32s3")
 set(EXTRA_COMPONENT_DIRS "")
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "0.16.13")
+    set(PROJECT_VER "0.17.16")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

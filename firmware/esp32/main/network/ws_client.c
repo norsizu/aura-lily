@@ -1292,6 +1292,10 @@ static void ws_apply_pending_dialogue(void)
         return;
     }
 
+    if (s_pending_pose >= 0 || s_pending_scene >= 0) {
+        aura_ui_reset_idle_surface();
+    }
+
     if (s_pending_segment_count > 0) {
         s_active_segment_count = s_pending_segment_count;
         s_active_segment_index = 0;
@@ -1374,6 +1378,9 @@ static void ws_show_error_dialogue(const char *text)
 static void ws_note_tts_started(void)
 {
     if (s_tts_stream_started) return;
+    /* Scheduled reminders and other server-initiated speech are foreground
+     * activity even when the settled information board is visible. */
+    aura_ui_reset_idle_surface();
     s_tts_stream_started = true;
     s_tts_ui_pending = true;
     s_tts_playback_started_at_ms = esp_timer_get_time() / 1000;
@@ -2948,6 +2955,7 @@ static void handle_server_message(const char *json_str, int len)
         const cJSON *emo = cJSON_GetObjectItem(root, "emotion");
         if (emo && cJSON_IsString(emo)) {
             ESP_LOGI(TAG, "Emotion: %s", emo->valuestring);
+            aura_ui_reset_idle_surface();
             /* Store emotion for portrait display */
             strncpy(g_state.current_emotion, emo->valuestring,
                     sizeof(g_state.current_emotion) - 1);

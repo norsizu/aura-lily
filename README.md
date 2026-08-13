@@ -142,7 +142,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 不安装 ESP-IDF 也可以直接刷写：
 
-1. 准备 Chrome 或 Edge、USB 数据线，并下载 [Release 中的完整 `.bin` 刷机包](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public)。
+1. 准备 Chrome 或 Edge、USB 数据线，并下载 [Release 中的完整 `.bin` 刷机包](https://github.com/norsizu/aura-lily/releases/latest)。
 2. 打开 [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/)，点击顶部 **Connect**，选择设备的 USB 串口并授权。
 3. 切换到 **DIY**，把 Flash Address 改为 `0x0000`，选择下载的完整 `.bin` 文件。
 4. 点击 **Program**，等待进度完成；完成后在 Console 中重置设备，或拔插一次 USB。

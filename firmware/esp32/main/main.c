@@ -2737,15 +2737,18 @@ static void input_task(void *arg)
                     if (sel == MAIN_MENU_SHOP) {
                         s_menu_open = false;
                         s_shop_open = true;
+                        aura_ui_reset_idle_surface();
                         s_shop_sel  = 0;
                         s_shop_saved_outfit = g_state.current_outfit;
                     } else if (sel == MAIN_MENU_WARDROBE) {
                         s_menu_open = false;
                         s_wardrobe_open  = true;
+                        aura_ui_reset_idle_surface();
                         s_wardrobe_sel   = normalize_unlocked_outfit(g_state.current_outfit);
                     } else if (sel == MAIN_MENU_DESSERT) {
                         s_menu_open = false;
                         s_dessert_open = true;
+                        aura_ui_reset_idle_surface();
                         s_dessert_sel = 0;
                     } else if (sel == MAIN_MENU_VOLUME) {
                         s_volume_menu_open = true;
@@ -2754,6 +2757,7 @@ static void input_task(void *arg)
                         s_menu_open = false;
                         s_language_sel = (int)s_ui_language;
                         s_language_select_open = true;
+                        aura_ui_reset_idle_surface();
                         aura_ui_mark_dirty();
                     } else if (sel == MAIN_MENU_WIFI) {
                         s_wifi_menu_open = true;
@@ -2788,6 +2792,7 @@ static void input_task(void *arg)
                 } else if (key_evt == BTN_EVENT_KEY_LONG) {
                     s_dessert_open = false;
                     s_menu_open = true;
+                    aura_ui_reset_idle_surface();
                     s_menu_sel = MAIN_MENU_DESSERT;
                     aura_ui_mark_dirty();
                 }
@@ -2836,6 +2841,7 @@ static void input_task(void *arg)
                     s_shop_open = false;
                     g_state.current_outfit = s_shop_saved_outfit;
                     s_menu_open = true;
+                    aura_ui_reset_idle_surface();
                     s_volume_menu_open = false;
                     s_wifi_menu_open = false;
                     s_menu_sel = MAIN_MENU_SHOP;
@@ -2862,6 +2868,7 @@ static void input_task(void *arg)
                 } else if (key_evt == BTN_EVENT_KEY_LONG) {
                     s_wardrobe_open = false;
                     s_menu_open = true;
+                    aura_ui_reset_idle_surface();
                     s_volume_menu_open = false;
                     s_wifi_menu_open = false;
                     s_menu_sel = MAIN_MENU_WARDROBE;
@@ -2878,17 +2885,12 @@ static void input_task(void *arg)
 
             button_event_t boot_evt = buttons_poll_boot();
             if (boot_evt == BTN_EVENT_BOOT_SHORT) {
-                bool was_info_board = g_state.info_board_visible;
                 log_input_diag("boot_short_open_menu", state, ww_listening);
-                aura_ui_reset_idle_surface();
-                if (was_info_board) {
-                    vTaskDelay(pdMS_TO_TICKS(30));
-                    continue;
-                }
                 s_menu_open = true;
                 s_volume_menu_open = false;
                 s_wifi_menu_open = false;
                 s_menu_sel  = 0;
+                aura_ui_reset_idle_surface();
                 vTaskDelay(pdMS_TO_TICKS(30));
                 continue;
             }

@@ -33,6 +33,12 @@ static void clear_agent_panel_locked(void)
     g_state.agent_status[0] = '\0';
 }
 
+static void interrupt_idle_surface_locked(int64_t now_ms)
+{
+    g_state.idle_since_ms = now_ms;
+    g_state.info_board_visible = false;
+}
+
 void aura_ui_mark_dirty(void)
 {
     portENTER_CRITICAL(&s_ui_state_mux);
@@ -42,6 +48,7 @@ void aura_ui_mark_dirty(void)
 
 void aura_ui_enter_listening(int pose, int mic_level)
 {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
     if (mic_level < 0) mic_level = 0;
     if (mic_level > 100) mic_level = 100;
 
@@ -54,6 +61,7 @@ void aura_ui_enter_listening(int pose, int mic_level)
     }
     clear_dialogue_locked();
     clear_agent_panel_locked();
+    interrupt_idle_surface_locked(now_ms);
     g_state.dirty = true;
     portEXIT_CRITICAL(&s_ui_state_mux);
 }
@@ -61,6 +69,7 @@ void aura_ui_enter_listening(int pose, int mic_level)
 bool aura_ui_ensure_listening(int pose, int min_mic_level)
 {
     bool changed = false;
+    const int64_t now_ms = esp_timer_get_time() / 1000;
 
     if (min_mic_level < 0) min_mic_level = 0;
     if (min_mic_level > 100) min_mic_level = 100;
@@ -92,6 +101,10 @@ bool aura_ui_ensure_listening(int pose, int min_mic_level)
         clear_agent_panel_locked();
         changed = true;
     }
+    if (g_state.info_board_visible) {
+        interrupt_idle_surface_locked(now_ms);
+        changed = true;
+    }
 
     if (changed) {
         g_state.dirty = true;
@@ -103,6 +116,7 @@ bool aura_ui_ensure_listening(int pose, int min_mic_level)
 
 void aura_ui_set_dialogue(const char *text, int ttl_ticks)
 {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_ui_state_mux);
     if (g_state.ui_mode == AURA_UI_LISTENING && text && text[0] != '\0') {
         /*
@@ -121,6 +135,9 @@ void aura_ui_set_dialogue(const char *text, int ttl_ticks)
         g_state.dialogue_page_tick = 0;
     }
     g_state.dialogue_ticks_left = ttl_ticks;
+    if ((text && text[0] != '\0') || ttl_ticks > 0) {
+        interrupt_idle_surface_locked(now_ms);
+    }
     g_state.dirty = true;
     portEXIT_CRITICAL(&s_ui_state_mux);
 }
@@ -162,6 +179,7 @@ void aura_ui_limit_dialogue_ttl(int ttl_ticks)
 void aura_ui_set_agent_panel(bool visible, int progress,
                              const char *title, const char *status)
 {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
     if (progress < 0) progress = 0;
     if (progress > 100) progress = 100;
 
@@ -174,14 +192,21 @@ void aura_ui_set_agent_panel(bool visible, int progress,
     if (status) {
         copy_text(g_state.agent_status, sizeof(g_state.agent_status), status);
     }
+    if (visible) {
+        interrupt_idle_surface_locked(now_ms);
+    }
     g_state.dirty = true;
     portEXIT_CRITICAL(&s_ui_state_mux);
 }
 
 void aura_ui_set_agent_visible(bool visible)
 {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_ui_state_mux);
     g_state.agent_panel_visible = visible;
+    if (visible) {
+        interrupt_idle_surface_locked(now_ms);
+    }
     g_state.dirty = true;
     portEXIT_CRITICAL(&s_ui_state_mux);
 }
@@ -198,8 +223,7 @@ void aura_ui_reset_idle_surface(void)
 {
     const int64_t now_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_ui_state_mux);
-    g_state.idle_since_ms = now_ms;
-    g_state.info_board_visible = false;
+    interrupt_idle_surface_locked(now_ms);
     g_state.dirty = true;
     portEXIT_CRITICAL(&s_ui_state_mux);
 }

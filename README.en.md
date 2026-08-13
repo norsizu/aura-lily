@@ -142,7 +142,7 @@ Each Release includes the complete Web-flash image and its SHA-256 checksum. The
 
 You do not need to install ESP-IDF for a first flash:
 
-1. Use Chrome or Edge with a USB data cable, and download the [complete `.bin` image from the Release](https://github.com/norsizu/aura-lily/releases/tag/v0.17.0-public).
+1. Use Chrome or Edge with a USB data cable, and download the [complete `.bin` image from the latest Release](https://github.com/norsizu/aura-lily/releases/latest).
 2. Open [Espressif ESP LaunchPad](https://espressif.github.io/esp-launchpad/), click **Connect**, select the device USB serial port, and grant access.
 3. Open **DIY**, change Flash Address to `0x0000`, and choose the downloaded full `.bin` file.
 4. Click **Program** and wait for completion. Reset from the Console tab or unplug and reconnect the device.

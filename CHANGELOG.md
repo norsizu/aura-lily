@@ -2,6 +2,25 @@
 
 All notable public-release changes are documented here.
 
+## v0.17.1-public - 2026-08-14
+
+### Fixed
+
+- Treat the five-minute information board as a low-priority idle surface.
+- Menus, recording, dialogue, scheduled reminder audio, Agent panels, scene
+  changes, pose/emotion changes, and shop or wardrobe screens now leave the
+  information board immediately.
+- A single BOOT press now opens the menu directly while the information board
+  is visible; a second press is no longer required.
+
+### Firmware assets
+
+- Firmware application version: `0.17.16`.
+- `aura-lily-v0.17.1-public-full.bin` is the complete first-flash image for
+  address `0x0000`.
+- `aura_doudou.bin` is the OTA application image.
+- `assets.bin` is unchanged from the previous public release.
+
 ## v0.17.0-public - 2026-08-13
 
 ### Added
