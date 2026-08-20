@@ -6,6 +6,7 @@
 void aura_ui_mark_dirty(void);
 void aura_ui_enter_listening(int pose, int mic_level);
 bool aura_ui_ensure_listening(int pose, int min_mic_level);
+void aura_ui_set_continuous_dialogue(bool active);
 void aura_ui_set_dialogue(const char *text, int ttl_ticks);
 void aura_ui_clear_dialogue(void);
 void aura_ui_set_dialogue_progress(int progress_permille);

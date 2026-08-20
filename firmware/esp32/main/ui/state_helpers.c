@@ -114,6 +114,16 @@ bool aura_ui_ensure_listening(int pose, int min_mic_level)
     return changed;
 }
 
+void aura_ui_set_continuous_dialogue(bool active)
+{
+    portENTER_CRITICAL(&s_ui_state_mux);
+    if (g_state.continuous_dialogue_active != active) {
+        g_state.continuous_dialogue_active = active;
+        g_state.dirty = true;
+    }
+    portEXIT_CRITICAL(&s_ui_state_mux);
+}
+
 void aura_ui_set_dialogue(const char *text, int ttl_ticks)
 {
     const int64_t now_ms = esp_timer_get_time() / 1000;

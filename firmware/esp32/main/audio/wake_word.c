@@ -18,7 +18,8 @@ static volatile bool s_detected = false;
 static volatile bool s_running = false;
 
 #define WAKE_WORD_COMMAND_ID 1
-#define WAKE_WORD_COMMAND_TEXT "dou dou"
+#define WAKE_WORD_COMMAND_TEXT "ni hao ao la"      /* 你好Aura（主发音） */
+#define WAKE_WORD_COMMAND_TEXT_ALT "ni hao ou la"  /* 你好Aura（欧拉变体发音） */
 #define WAKE_WORD_DECOY_COMMAND_ID_BASE 100
 #define WAKE_WORD_ENGINE_THRESHOLD 0.76f
 #define WAKE_WORD_ACCEPT_PROB 0.76f
@@ -28,8 +29,8 @@ static volatile bool s_running = false;
 /*
  * MultiNet is a command recognizer, not a dedicated always-on wake-word model.
  * Running it with only one command in IDLE can force-match nearby loud speech
- * to "dou dou". Keep guarded model thresholds, add negative classes, then pass
- * every "dou dou" candidate through this acoustic shape gate.
+ * to the configured Aura phrase. Keep guarded model thresholds, add negative
+ * classes, then pass every candidate through this acoustic shape gate.
  */
 #define WAKE_WORD_VOICE_RMS_THRESHOLD       18
 #define WAKE_WORD_MIN_PEAK_RMS              20
@@ -71,6 +72,12 @@ static int s_voice_gap_ms = 0;
 static int s_quiet_run_ms = 0;
 static int s_pre_voice_quiet_ms = 0;
 static int s_voice_peak_rms = 0;
+/* MultiNet reports often lag the end of the phrase by one audio chunk. */
+#define WAKE_WORD_SEGMENT_HOLD_MS 1200
+static int s_prev_voice_peak_rms = 0;
+static int s_prev_voice_run_ms = 0;
+static int s_prev_pre_voice_quiet_ms = 0;
+static int64_t s_prev_voice_end_ms = 0;
 
 static int wake_word_pcm_rms(const int16_t *pcm, int samples)
 {
@@ -91,6 +98,10 @@ static void wake_word_reset_gate_state(void)
     s_quiet_run_ms = 0;
     s_pre_voice_quiet_ms = 0;
     s_voice_peak_rms = 0;
+    s_prev_voice_peak_rms = 0;
+    s_prev_voice_run_ms = 0;
+    s_prev_pre_voice_quiet_ms = 0;
+    s_prev_voice_end_ms = 0;
 }
 
 static void wake_word_update_gate_state(int rms, int chunk_ms)
@@ -120,6 +131,10 @@ static void wake_word_update_gate_state(int rms, int chunk_ms)
     if (s_voice_run_ms > 0) {
         s_voice_gap_ms += chunk_ms;
         if (s_voice_gap_ms > WAKE_WORD_SPEECH_GAP_RESET_MS) {
+            s_prev_voice_peak_rms = s_voice_peak_rms;
+            s_prev_voice_run_ms = s_voice_run_ms;
+            s_prev_pre_voice_quiet_ms = s_pre_voice_quiet_ms;
+            s_prev_voice_end_ms = esp_timer_get_time() / 1000;
             s_voice_run_ms = 0;
             s_voice_gap_ms = 0;
             s_pre_voice_quiet_ms = s_quiet_run_ms;
@@ -132,6 +147,16 @@ static bool wake_word_gate_accepts(float prob, const char **reason)
 {
     int64_t now_ms = esp_timer_get_time() / 1000;
 
+    int peak_rms = s_voice_peak_rms;
+    int voice_ms = s_voice_run_ms;
+    int pre_quiet_ms = s_pre_voice_quiet_ms;
+    if (voice_ms == 0 && s_prev_voice_end_ms > 0 &&
+        now_ms - s_prev_voice_end_ms <= WAKE_WORD_SEGMENT_HOLD_MS) {
+        peak_rms = s_prev_voice_peak_rms;
+        voice_ms = s_prev_voice_run_ms;
+        pre_quiet_ms = s_prev_pre_voice_quiet_ms;
+    }
+
     if (s_last_accept_ms > 0 && now_ms - s_last_accept_ms < WAKE_WORD_ACCEPT_COOLDOWN_MS) {
         *reason = "cooldown";
         return false;
@@ -140,32 +165,31 @@ static bool wake_word_gate_accepts(float prob, const char **reason)
         *reason = "low_prob";
         return false;
     }
+    if (peak_rms < WAKE_WORD_MIN_PEAK_RMS) {
+        *reason = "low_peak";
+        return false;
+    }
     if (prob >= WAKE_WORD_HIGH_CONF_PROB &&
-        s_voice_peak_rms >= WAKE_WORD_MIN_PEAK_RMS &&
-        s_voice_run_ms >= WAKE_WORD_HIGH_CONF_MIN_VOICE_MS) {
+        voice_ms >= WAKE_WORD_HIGH_CONF_MIN_VOICE_MS) {
         s_last_accept_ms = now_ms;
         *reason = "accepted_high_conf";
         return true;
     }
-    if (prob >= WAKE_WORD_STRONG_PEAK_PROB &&
-        s_voice_peak_rms >= WAKE_WORD_STRONG_PEAK_RMS) {
+    /* A strong model hit wins over a noisy RMS gate. */
+    if (prob >= WAKE_WORD_STRONG_PEAK_PROB && peak_rms >= WAKE_WORD_STRONG_PEAK_RMS) {
         s_last_accept_ms = now_ms;
         *reason = "accepted_strong_peak";
         return true;
     }
-    if (s_voice_peak_rms < WAKE_WORD_MIN_PEAK_RMS) {
-        *reason = "low_peak";
-        return false;
-    }
-    if (s_voice_run_ms < WAKE_WORD_MIN_VOICE_RUN_MS) {
-        *reason = "too_short";
-        return false;
-    }
-    if (s_voice_run_ms > WAKE_WORD_MAX_VOICE_RUN_MS) {
+    if (voice_ms > WAKE_WORD_MAX_VOICE_RUN_MS) {
         *reason = "continuous_speech";
         return false;
     }
-    if (s_pre_voice_quiet_ms < WAKE_WORD_MIN_PRE_QUIET_MS) {
+    if (voice_ms < WAKE_WORD_MIN_VOICE_RUN_MS) {
+        *reason = "too_short";
+        return false;
+    }
+    if (pre_quiet_ms < WAKE_WORD_MIN_PRE_QUIET_MS) {
         *reason = "no_pre_quiet";
         return false;
     }
@@ -187,6 +211,12 @@ static esp_err_t wake_word_register_commands(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add wake command '%s': 0x%x", WAKE_WORD_COMMAND_TEXT, ret);
         return ret;
+    }
+
+    /* Register a pronunciation variant under the same command id. */
+    ret = esp_mn_commands_add(WAKE_WORD_COMMAND_ID, WAKE_WORD_COMMAND_TEXT_ALT);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Skipping alt wake phrase '%s': 0x%x", WAKE_WORD_COMMAND_TEXT_ALT, ret);
     }
 
     int decoys_added = 0;
@@ -248,13 +278,13 @@ esp_err_t wake_word_init(void)
     /* 使用较高阈值，配合负类和声学门，优先降低环境说话误触发。 */
     s_multinet->set_det_threshold(s_model_data, WAKE_WORD_ENGINE_THRESHOLD);
 
-    /* 注册 "豆豆" 和一组负类命令，避免单命令强制匹配。 */
+    /* 注册 Aura 唤醒词和一组负类命令，避免单命令强制匹配。 */
     if (wake_word_register_commands() != ESP_OK) {
         return ESP_FAIL;
     }
 
     int feed_size = s_multinet->get_samp_chunksize(s_model_data);
-    ESP_LOGI(TAG, "Wake word '豆豆' ready, feed chunk: %d samples, threshold=%.2f/%.2f",
+    ESP_LOGI(TAG, "Wake word '你好Aura' ready, feed chunk: %d samples, threshold=%.2f/%.2f",
              feed_size, WAKE_WORD_ENGINE_THRESHOLD, WAKE_WORD_ACCEPT_PROB);
 
     /* 分配环形缓冲区 (PSRAM) */

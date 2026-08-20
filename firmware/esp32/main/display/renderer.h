@@ -31,6 +31,8 @@ typedef struct {
     int weather_icon;       // 0=sun, 1=cloud, 2=rain, 3=snow
     char weather_city[32];
     bool weather_valid;
+    bool battery_valid;
+    int battery_percent;    // 0-100; valid only when battery_valid is true
 
     // 状态
     int mood;               // 0-100
@@ -73,6 +75,7 @@ typedef struct {
     int ui_anim_tick;       // 10fps 动画 tick
     int64_t idle_since_ms;  // monotonic start of the current settled idle period
     bool info_board_visible;
+    bool continuous_dialogue_active;
     int mic_level;          // 0-100, 录音强度
     bool agent_panel_visible;
     int agent_progress;     // 0-100

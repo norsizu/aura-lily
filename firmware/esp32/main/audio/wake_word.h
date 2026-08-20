@@ -5,7 +5,7 @@
 
 /**
  * 初始化唤醒词检测 (MultiNet 命令词识别)
- * 使用 "豆豆" (pinyin: dou dou) 作为唤醒词
+ * 使用 "你好奥拉" / "你好欧拉" 作为唤醒词
  */
 esp_err_t wake_word_init(void);
 

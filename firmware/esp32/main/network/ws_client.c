@@ -55,6 +55,9 @@ static bool    s_handshake_ready = false;
 static int64_t s_last_error_sfx_ms = 0;
 static bool    s_waiting_send_ack = false;
 static bool    s_reply_in_flight = false;
+/* Only replies to a locally-started turn may reopen the microphone. */
+static volatile bool s_user_turn_active = false;
+static volatile uint32_t s_user_turn_id = 0;
 static volatile bool s_server_vad_stop_received = false;
 static uint32_t s_connection_seq = 0;
 static uint32_t s_turn_seq = 0;
@@ -113,6 +116,8 @@ static int     s_pending_coins = 0;
 static volatile bool s_dessert_purchase_pending = false;
 static bool    s_pending_continue_listening = false;
 static bool    s_active_continue_listening_after_tts = false;
+static volatile bool s_continuous_listening_pending = false;
+static volatile bool s_continuous_listening_enabled = true;
 static int     s_active_tts_stream_id = 0;
 static uint32_t s_active_tts_turn_id = 0;
 static bool    s_tts_stream_started = false;
@@ -595,6 +600,9 @@ static esp_err_t ws_send_hello(void)
     cJSON_AddBoolToObject(caps, "binary_tts", true);
     cJSON_AddBoolToObject(caps, "server_vad", AURA_SERVER_VAD_DEFAULT);
     cJSON_AddBoolToObject(caps, "button_cancel", true);
+    cJSON_AddBoolToObject(caps, "continuous_dialogue", true);
+    cJSON_AddBoolToObject(caps, "hands_free", true);
+    cJSON_AddBoolToObject(caps, "continuous_auto_vad", true);
     cJSON_AddBoolToObject(caps, "single_device", true);
 
     char *payload = cJSON_PrintUnformatted(root);
@@ -1036,6 +1044,7 @@ static void ws_begin_new_turn(void)
     ws_clear_text_reassembly();
     ws_clear_binary_reassembly();
     s_server_vad_stop_received = false;
+    s_continuous_listening_pending = false;
     audio_stop_playback();
     aura_ui_clear_dialogue();
     aura_ui_set_agent_visible(false);
@@ -2059,8 +2068,29 @@ bool ws_client_take_server_vad_stop(void)
     return stopped;
 }
 
+bool ws_client_take_continuous_listening(void)
+{
+    bool pending = s_continuous_listening_pending;
+    s_continuous_listening_pending = false;
+    return pending;
+}
+
+void ws_client_set_continuous_listening_enabled(bool enabled)
+{
+    s_continuous_listening_enabled = enabled;
+    if (!enabled) {
+        s_continuous_listening_pending = false;
+        s_user_turn_active = false;
+        s_user_turn_id = 0;
+    }
+    ESP_LOGI(TAG, "Hands-free continuation %s", enabled ? "enabled" : "disabled");
+}
+
 void ws_client_cancel_pending_reply(void)
 {
+    s_continuous_listening_pending = false;
+    s_user_turn_active = false;
+    s_user_turn_id = 0;
     s_waiting_send_ack = false;
     s_reply_in_flight = false;
     ws_clear_pending_dialogue();
@@ -2095,7 +2125,9 @@ void ws_client_on_audio_loop(void)
     if (s_tts_stream_started && s_tts_final_received && !audio_is_non_music_playing() &&
         (now_ms - s_last_tts_chunk_ms) >= TTS_DONE_SETTLE_MS) {
         if (fsm_get_state() == AURA_STATE_SPEAKING) {
-            bool continue_listening = s_active_continue_listening_after_tts;
+            bool continue_listening = s_active_continue_listening_after_tts &&
+                s_continuous_listening_enabled && s_user_turn_active &&
+                s_user_turn_id != 0 && s_active_tts_turn_id == s_user_turn_id;
             ESP_LOGI(TAG, "TTS done settle continue=%d turn=%u",
                      continue_listening ? 1 : 0,
                      (unsigned)s_active_tts_turn_id);
@@ -2110,6 +2142,11 @@ void ws_client_on_audio_loop(void)
                 aura_ui_clear_dialogue();
             } else {
                 aura_ui_limit_dialogue_ttl(REPLY_DIALOGUE_DONE_TICKS);
+            }
+            s_continuous_listening_pending = continue_listening;
+            if (!continue_listening) {
+                s_user_turn_active = false;
+                s_user_turn_id = 0;
             }
             fsm_handle_event(continue_listening
                              ? AURA_EVT_TTS_DONE_CONTINUE
@@ -2199,18 +2236,20 @@ bool ws_client_dessert_purchase_pending(void)
 esp_err_t ws_client_send_start_with_server_vad(bool server_vad_enabled)
 {
     ESP_LOGI(TAG, ">>> start (opus, 16kHz, server_vad=%d)", server_vad_enabled ? 1 : 0);
-    char buf[512];
+    char buf[768];
     ws_begin_new_turn();
     s_turn_seq++;
     s_turn_started_at_ms = esp_timer_get_time() / 1000;
+    s_user_turn_active = true;
+    s_user_turn_id = s_turn_seq;
     if (s_device_public_ip[0] != '\0') {
         snprintf(
             buf,
             sizeof(buf),
             "{\"type\":\"start\",\"sample_rate\":16000,\"format\":\"opus\",\"frame_duration\":60,"
-            "\"device_public_ip\":\"%s\",\"language\":\"%s\","
+            "\"device_public_ip\":\"%s\",\"language\":\"%s\",\"continuous_dialogue\":true,\"hands_free\":true,\"continuous_auto_vad\":true,"
             "\"payload\":{\"device_id\":\"%s\",\"boot_id\":\"%s\",\"connection_seq\":%u,\"turn_id\":%u,"
-            "\"server_vad\":%s,\"device_public_ip\":\"%s\"}}",
+            "\"server_vad\":%s,\"continuous_dialogue\":true,\"hands_free\":true,\"continuous_auto_vad\":true,\"device_public_ip\":\"%s\"}}",
             s_device_public_ip,
             s_language,
             s_device_id,
@@ -2224,8 +2263,8 @@ esp_err_t ws_client_send_start_with_server_vad(bool server_vad_enabled)
         snprintf(
             buf,
             sizeof(buf),
-            "{\"type\":\"start\",\"sample_rate\":16000,\"format\":\"opus\",\"frame_duration\":60,\"language\":\"%s\","
-            "\"payload\":{\"device_id\":\"%s\",\"boot_id\":\"%s\",\"connection_seq\":%u,\"turn_id\":%u,\"server_vad\":%s}}",
+            "{\"type\":\"start\",\"sample_rate\":16000,\"format\":\"opus\",\"frame_duration\":60,\"language\":\"%s\",\"continuous_dialogue\":true,\"hands_free\":true,\"continuous_auto_vad\":true,"
+            "\"payload\":{\"device_id\":\"%s\",\"boot_id\":\"%s\",\"connection_seq\":%u,\"turn_id\":%u,\"server_vad\":%s,\"continuous_dialogue\":true,\"hands_free\":true,\"continuous_auto_vad\":true}}",
             s_language,
             s_device_id,
             s_boot_id,
@@ -2236,6 +2275,8 @@ esp_err_t ws_client_send_start_with_server_vad(bool server_vad_enabled)
     }
     esp_err_t ret = ws_client_send_text_timeout(buf, WS_CONTROL_SEND_TIMEOUT_MS);
     if (ret != ESP_OK) {
+        s_user_turn_active = false;
+        s_user_turn_id = 0;
         play_error_sfx_throttled();
     } else {
         ESP_LOGI(TAG, "VOICE_TIMING listen_start_sent turn=%u server_vad=%d",

@@ -37,6 +37,7 @@
 #include "ws_client.h"
 #include "ota_update.h"
 #include "shtc3.h"
+#include "battery.h"
 #include "pcf85063.h"
 #include "sd_card.h"
 #include "buttons.h"
@@ -76,8 +77,28 @@ static int64_t s_wake_resume_after_ms = 0;  /* 播报结束后的唤醒词恢复
 static bool s_ignore_listening_release = false;
 static int s_output_volume = AURA_DEFAULT_OUTPUT_VOLUME;
 static volatile bool s_audio_ready = false;
+static bool s_continuous_session_active = false;
+static uint32_t s_continuous_session_turns = 0;
+static int64_t s_continuous_session_started_ms = 0;
 
 static void ui_set_dialogue(const char *text, int ttl_ticks);
+
+static void continuous_session_begin(void)
+{
+    s_continuous_session_active = true;
+    s_continuous_session_turns = 0;
+    s_continuous_session_started_ms = esp_timer_get_time() / 1000;
+    ws_client_set_continuous_listening_enabled(true);
+}
+
+static void continuous_session_end(void)
+{
+    s_continuous_session_active = false;
+    s_continuous_session_turns = 0;
+    s_continuous_session_started_ms = 0;
+    ws_client_set_continuous_listening_enabled(false);
+    aura_ui_set_continuous_dialogue(false);
+}
 
 /* ── 主菜单弹窗状态 (display_task / input_task 共享) ─────────────── */
 static volatile bool s_menu_open = false;
@@ -608,6 +629,15 @@ static void auto_outfit_tick(void)
 #define PTT_MIN_HOLD_MS            600   /* 按住说话：不足 600ms 松开视为误触，取消发送 */
 #define PTT_MIN_RECORD_MS          300   /* 开始录音后过快松手视为取消，避免空 ASR 报错 */
 #define PTT_START_TONE_TIMEOUT_MS  1500  /* 等待开始音完整播放，避免录音静音流抢占 I2S TX */
+#define CONTINUOUS_VAD_SILENCE_THRESHOLD 220
+#define CONTINUOUS_VAD_SPEECH_START_RMS  280
+#define CONTINUOUS_VAD_SPEECH_START_PEAK 1200
+#define CONTINUOUS_VAD_MIN_SPEECH_MS      240
+#define CONTINUOUS_VAD_SILENCE_MS         2000
+#define CONTINUOUS_VAD_NO_SPEECH_MS       4500
+#define CONTINUOUS_VAD_MAX_RECORD_MS      30000
+#define CONTINUOUS_SESSION_MAX_MS         (10 * 60 * 1000)
+#define CONTINUOUS_SESSION_MAX_TURNS      20
 #define DIALOGUE_PAGE_TICKS        36
 
 #define OPUS_FRAME_SAMPLES 960
@@ -1478,6 +1508,9 @@ static void start_voice_session_from_key(bool *ww_listening)
         *ww_listening = false;
     }
     s_ignore_listening_release = false;
+    /* A fresh user gesture arms continuation; the server still must opt in
+     * per reply before the next turn becomes hands-free. */
+    continuous_session_begin();
     fsm_handle_event(AURA_EVT_WAKE_BUTTON);
 }
 
@@ -1678,10 +1711,12 @@ static void on_fsm_transition(aura_fsm_state_t old_state,
             esp_timer_stop(s_speak_timer);
 
         aura_ui_enter_listening(2 + (esp_random() % 2), 8);  /* 倾听姿势随机 2/3 */
+        aura_ui_set_continuous_dialogue(false);
         ESP_LOGI(TAG, "LISTENING UI armed (old=%s)", fsm_state_name(old_state));
         break;
 
     case AURA_STATE_PROCESSING:
+        aura_ui_set_continuous_dialogue(false);
         g_state.ui_mode = AURA_UI_PROCESSING;
         g_state.ui_anim_tick = 0;
         g_state.current_pose = 4;  /* thinking */
@@ -1699,6 +1734,7 @@ static void on_fsm_transition(aura_fsm_state_t old_state,
         g_state.ui_anim_tick = 0;
         g_state.mic_level = 0;
         g_state.current_pose = 5 + (esp_random() % 2);  /* 说话姿势随机 5/6 */
+        aura_ui_set_continuous_dialogue(false);
         ui_set_agent_panel(true, g_state.agent_progress, "AGENT", tr_text(&T_AGENT_REPLYING));
         aura_ui_mark_dirty();
         break;
@@ -1716,6 +1752,7 @@ static void on_fsm_transition(aura_fsm_state_t old_state,
         g_state.ui_anim_tick = 0;
         g_state.mic_level = 0;
         g_state.current_pose = esp_random() % 2;  /* 待机姿势随机 0/1 */
+        aura_ui_set_continuous_dialogue(false);
         ui_set_agent_panel(false, 0, "", "");
         music_player_resume_after_interaction();
         aura_ui_mark_dirty();
@@ -2115,8 +2152,10 @@ static void sensor_task(void *arg)
     // 初始化传感器
     shtc3_init();
     pcf85063_init();
+    battery_init();
 
     int env_poll_ticks = 0;
+    int battery_poll_ticks = 5;
 
     while (1) {
         /* Wi-Fi 图标使用真实连接状态和 RSSI 映射，不再显示假信号 */
@@ -2138,6 +2177,20 @@ static void sensor_task(void *arg)
                 g_state.wifi_strength = wifi_bars;
                 aura_ui_mark_dirty();
             }
+        }
+
+        /* RLCD battery voltage is sampled slowly and filtered in battery.c. */
+        if (battery_poll_ticks <= 0) {
+            int percent = 0;
+            bool valid = false;
+            battery_read(&percent, &valid);
+            if (g_state.battery_valid != valid ||
+                (valid && g_state.battery_percent != percent)) {
+                g_state.battery_valid = valid;
+                g_state.battery_percent = percent;
+                aura_ui_mark_dirty();
+            }
+            battery_poll_ticks = 30;
         }
 
         /* 温湿度每 30 秒采一次，时间每秒刷新 */
@@ -2218,6 +2271,7 @@ static void sensor_task(void *arg)
         }
 
         env_poll_ticks--;
+        battery_poll_ticks--;
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -2573,13 +2627,13 @@ static void input_task(void *arg)
     }
 #endif /* MIC_LOOPBACK_TEST */
 
-    /* 初始化唤醒词检测 (MultiNet 命令词 "豆豆") */
+    /* 初始化唤醒词检测 (MultiNet 命令词 "你好奥拉" / "你好欧拉") */
     bool ww_available = false;
     esp_err_t ww_ret = wake_word_init();
     if (ww_ret != ESP_OK) {
         ESP_LOGW(TAG, "Wake word init failed (0x%x), button-only mode", ww_ret);
     } else {
-        ESP_LOGI(TAG, "Wake word '豆豆' ready!");
+        ESP_LOGI(TAG, "Wake word '你好奥拉' / '你好欧拉' ready!");
         ww_available = true;
     }
 
@@ -3034,7 +3088,7 @@ static void input_task(void *arg)
                     wake_word_feed(ww_mono_buf, ww_feed_size);
 
                     if (wake_word_detected()) {
-                        ESP_LOGI(TAG, "*** '豆豆' detected! Capturing command... ***");
+                        ESP_LOGI(TAG, "*** '你好奥拉' detected! Capturing command... ***");
 
                         if (!ws_client_is_ready()) {
                             ui_set_dialogue(wifi_manager_is_connected() ? tr_text(&T_CONNECTING) : tr_text(&T_VOICE_OFFLINE), 20);
@@ -3042,7 +3096,7 @@ static void input_task(void *arg)
                         }
 
                         /*
-                         * === "豆豆，XXX" 连续拾取模式 ===
+                         * === "你好奥拉，XXX" 连续拾取模式 ===
                          * 不播提示音，不切状态，直接在这里录音。
                          * I2S 已经在跑 (keep-alive 模式)，继续读就行。
                          *
@@ -3052,6 +3106,11 @@ static void input_task(void *arg)
                          */
                         wake_word_stop();
                         ww_listening = false;
+
+                        /* A wake word is an explicit user gesture.  Arm the
+                         * bounded hands-free session; the server still has
+                         * to opt in to each follow-up turn. */
+                        continuous_session_begin();
 
                         /* 切到 LISTENING 状态 (UI 显示录音中) */
                         fsm_handle_event(AURA_EVT_WAKE_WORD);
@@ -3294,10 +3353,30 @@ static void input_task(void *arg)
 
             button_event_t boot_evt = buttons_poll_boot();
             button_event_t key_evt = buttons_poll_key();
-            if (key_evt == BTN_EVENT_KEY_SHORT || key_evt == BTN_EVENT_KEY_LONG ||
-                boot_evt == BTN_EVENT_BOOT_SHORT || boot_evt == BTN_EVENT_BOOT_LONG) {
+            if (s_continuous_session_active &&
+                (boot_evt == BTN_EVENT_BOOT_SHORT || boot_evt == BTN_EVENT_BOOT_LONG)) {
+                ESP_LOGI(TAG, "BOOT during hands-free speaking -> exit to menu");
+                ws_client_cancel_pending_reply();
+                continuous_session_end();
+                fsm_handle_event(AURA_EVT_ABORT);
+                s_menu_open = true;
+                s_volume_menu_open = false;
+                s_wifi_menu_open = false;
+                s_menu_sel = 0;
+                aura_ui_reset_idle_surface();
+                aura_ui_mark_dirty();
+            } else if (s_continuous_session_active &&
+                       (key_evt == BTN_EVENT_KEY_SHORT || key_evt == BTN_EVENT_KEY_LONG)) {
+                ESP_LOGI(TAG, "KEY during hands-free speaking -> exit continuous chat");
+                ws_client_cancel_pending_reply();
+                continuous_session_end();
+                fsm_handle_event(AURA_EVT_ABORT);
+                button_wait_release();
+            } else if (key_evt == BTN_EVENT_KEY_SHORT || key_evt == BTN_EVENT_KEY_LONG ||
+                       boot_evt == BTN_EVENT_BOOT_SHORT || boot_evt == BTN_EVENT_BOOT_LONG) {
                 if (ws_client_is_ready()) {
                     ESP_LOGI(TAG, "Button during SPEAKING → interrupt and listen");
+                    continuous_session_begin();
                     fsm_handle_event(AURA_EVT_WAKE_BUTTON);
                 }
             }
@@ -3308,6 +3387,30 @@ static void input_task(void *arg)
 
         /* ── LISTENING: 录音循环 (toggle: 再按一下停止) ─── */
         if (state == AURA_STATE_LISTENING) {
+            /* A continuation is latched only after the previous reply's TTS
+             * has completed and the server explicitly opted in. */
+            bool continuous_recording = ws_client_take_continuous_listening();
+            aura_ui_set_continuous_dialogue(continuous_recording);
+            if (continuous_recording) {
+                int64_t session_now_ms = esp_timer_get_time() / 1000;
+                if (!s_continuous_session_active) {
+                    continuous_session_begin();
+                    session_now_ms = esp_timer_get_time() / 1000;
+                }
+                if (s_continuous_session_turns >= CONTINUOUS_SESSION_MAX_TURNS ||
+                    session_now_ms - s_continuous_session_started_ms >=
+                        CONTINUOUS_SESSION_MAX_MS) {
+                    ESP_LOGI(TAG, "Hands-free session limit reached turns=%u elapsed_ms=%lld",
+                             (unsigned)s_continuous_session_turns,
+                             (long long)(session_now_ms - s_continuous_session_started_ms));
+                    continuous_session_end();
+                    fsm_handle_event(AURA_EVT_ABORT);
+                    ui_set_dialogue(tr_text(&T_CANCELLED), 20);
+                    continue;
+                }
+                s_continuous_session_turns++;
+                ESP_LOGI(TAG, "Hands-free continuation: recording next turn");
+            }
             /*
              * BATCH 模式: 先录完整段到 PSRAM，按一下停止后一次性发送
              */
@@ -3332,14 +3435,15 @@ static void input_task(void *arg)
             int pcm_chunk_cnt = 0;
 
             int64_t record_start_ms = esp_timer_get_time() / 1000;
-            const int64_t MAX_RECORD_MS = 30000;
+            const int64_t MAX_RECORD_MS = continuous_recording
+                ? CONTINUOUS_VAD_MAX_RECORD_MS : 30000;
 
             /*
              * 兼容按住说话和短按 toggle：如果进入 LISTENING 时按键仍按着，
              * 初次松开就停止；否则保留“再次按下停止”的旧路径。
              * （600ms 长按判定已在 IDLE 分支完成，进到这里的按键会话都是已确认的。）
              */
-            s_ignore_listening_release = voice_button_any_pressed();
+            s_ignore_listening_release = !continuous_recording && voice_button_any_pressed();
 
             bool send_started = pcm_upload_begin(batch_buf, BATCH_MAX_SAMPLES, AURA_SERVER_VAD_DEFAULT);
             if (!send_started) {
@@ -3350,7 +3454,11 @@ static void input_task(void *arg)
             }
 
             bool cancel_recording = false;
+            bool continuous_exit_requested = false;
             bool stopped_by_server_vad = false;
+            bool continuous_had_speech = false;
+            int64_t continuous_last_speech_ms = record_start_ms;
+            int64_t continuous_speech_candidate_ms = -1;
 
             while (fsm_get_state() == AURA_STATE_LISTENING) {
                 task_wdt_reset_if(wdt_enabled);
@@ -3362,7 +3470,28 @@ static void input_task(void *arg)
 
                 bool button_pressed = voice_button_any_pressed();
 
-                if (s_ignore_listening_release && !button_pressed) {
+                /* In hands-free mode BOOT opens the menu and the voice key
+                 * exits the session. Neither action should be interpreted as
+                 * press-to-send. */
+                if (continuous_recording) {
+                    button_event_t continuous_boot_evt = buttons_poll_boot();
+                    if (continuous_boot_evt == BTN_EVENT_BOOT_SHORT ||
+                        continuous_boot_evt == BTN_EVENT_BOOT_LONG) {
+                        ESP_LOGI(TAG, "BOOT during hands-free recording -> exit to menu");
+                        continuous_exit_requested = true;
+                        cancel_recording = true;
+                        continuous_session_end();
+                        fsm_handle_event(AURA_EVT_ABORT);
+                        s_menu_open = true;
+                        s_volume_menu_open = false;
+                        s_wifi_menu_open = false;
+                        s_menu_sel = 0;
+                        aura_ui_reset_idle_surface();
+                        break;
+                    }
+                }
+
+                if (!continuous_recording && s_ignore_listening_release && !button_pressed) {
                     ESP_LOGI(TAG, "Button release → stop recording");
                     s_ignore_listening_release = false;
                     break;
@@ -3380,8 +3509,18 @@ static void input_task(void *arg)
                     break;
                 }
 
+                if (continuous_recording && button_pressed) {
+                    ESP_LOGI(TAG, "Voice key during hands-free recording -> exit");
+                    cancel_recording = true;
+                    continuous_exit_requested = true;
+                    continuous_session_end();
+                    fsm_handle_event(AURA_EVT_ABORT);
+                    button_wait_release();
+                    break;
+                }
+
                 /* Toggle: 松开后再次按下 → 停止录音 */
-                if (!s_ignore_listening_release && button_pressed) {
+                if (!continuous_recording && !s_ignore_listening_release && button_pressed) {
                     vTaskDelay(pdMS_TO_TICKS(30));  /* 去抖 */
                     if (voice_button_any_pressed()) {
                         cancel_recording = button_reached_cancel_hold();
@@ -3434,8 +3573,11 @@ static void input_task(void *arg)
                 }
 
                 int64_t sum_sq = 0;
+                int chunk_peak = 0;
                 size_t start = (batch_pos > 240) ? batch_pos - 240 : 0;
                 for (size_t j = start; j < batch_pos; j++) {
+                    int sample_abs = batch_buf[j] < 0 ? -(int)batch_buf[j] : (int)batch_buf[j];
+                    if (sample_abs > chunk_peak) chunk_peak = sample_abs;
                     sum_sq += (int64_t)batch_buf[j] * batch_buf[j];
                 }
                 int rms = (batch_pos > start) ?
@@ -3446,6 +3588,54 @@ static void input_task(void *arg)
                 if (g_state.mic_level != mic_level) {
                     g_state.mic_level = mic_level;
                     aura_ui_mark_dirty();
+                }
+
+                if (continuous_recording) {
+                    int64_t vad_now_ms = esp_timer_get_time() / 1000;
+                    int threshold = continuous_had_speech
+                        ? CONTINUOUS_VAD_SILENCE_THRESHOLD
+                        : CONTINUOUS_VAD_SPEECH_START_RMS;
+                    bool speech_like = rms >= threshold;
+                    if (!continuous_had_speech &&
+                        chunk_peak < CONTINUOUS_VAD_SPEECH_START_PEAK) {
+                        speech_like = false;
+                    }
+
+                    if (speech_like) {
+                        if (!continuous_had_speech) {
+                            if (continuous_speech_candidate_ms < 0) {
+                                continuous_speech_candidate_ms = vad_now_ms;
+                            }
+                            if (vad_now_ms - continuous_speech_candidate_ms >=
+                                CONTINUOUS_VAD_MIN_SPEECH_MS) {
+                                continuous_had_speech = true;
+                                continuous_last_speech_ms = vad_now_ms;
+                                ESP_LOGI(TAG, "Hands-free VAD speech confirmed after %lld ms",
+                                         (long long)(vad_now_ms - record_start_ms));
+                            }
+                        } else {
+                            continuous_last_speech_ms = vad_now_ms;
+                        }
+                    } else if (!continuous_had_speech) {
+                        continuous_speech_candidate_ms = -1;
+                    }
+
+                    if (!continuous_had_speech &&
+                        vad_now_ms - record_start_ms >= CONTINUOUS_VAD_NO_SPEECH_MS) {
+                        ESP_LOGI(TAG, "Hands-free VAD no speech timeout (%d ms) -> exit",
+                                 CONTINUOUS_VAD_NO_SPEECH_MS);
+                        cancel_recording = true;
+                        continuous_exit_requested = true;
+                        continuous_session_end();
+                        fsm_handle_event(AURA_EVT_ABORT);
+                        break;
+                    }
+                    if (continuous_had_speech &&
+                        vad_now_ms - continuous_last_speech_ms >= CONTINUOUS_VAD_SILENCE_MS) {
+                        ESP_LOGI(TAG, "Hands-free VAD silence (%d ms) -> submit turn",
+                                 CONTINUOUS_VAD_SILENCE_MS);
+                        break;
+                    }
                 }
 
                 pcm_chunk_cnt++;
@@ -3495,6 +3685,9 @@ static void input_task(void *arg)
             if (cancel_recording) {
                 if (send_started) {
                     pcm_upload_abort();
+                }
+                if (continuous_exit_requested) {
+                    ws_client_send_cancel("continuous_exit");
                 }
             } else if (finalized_by_backend) {
                 if (send_started) {

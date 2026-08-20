@@ -1070,9 +1070,13 @@ static void draw_recording_capsule(uint8_t *graybuf, int width, int height,
     }
 
     /* ── Hint — understated, centered ── */
-    const char *record_hint = state->ui_language == 1 ? "Hold to record · Release to send" :
-                              state->ui_language == 2 ? "長押しで録音・離して送信" :
-                                                       "按住录音 · 松开发送";
+    const char *record_hint = state->continuous_dialogue_active
+        ? (state->ui_language == 1 ? "Press left to exit continuous chat" :
+           state->ui_language == 2 ? "左キーで連続会話を終了" :
+                                     "按左键退出连续聊天")
+        : (state->ui_language == 1 ? "Hold to record · Release to send" :
+           state->ui_language == 2 ? "長押しで録音・離して送信" :
+                                     "按住录音 · 松开发送");
     draw_centered_utf8(graybuf, width, x, pw, y + 25, record_hint, UI_WHITE);
 }
 

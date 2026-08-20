@@ -5,7 +5,15 @@
 #pragma once
 
 #include "driver/gpio.h"
+#include "hal/adc_types.h"
 #include "sdkconfig.h"
+
+// ── Battery monitor (Waveshare RLCD 4.2) ───────────────
+#define RLCD_BATTERY_ADC_UNIT        ADC_UNIT_1
+#define RLCD_BATTERY_ADC_CHANNEL     ADC_CHANNEL_3   // GPIO4 / BAT_ADC
+#define RLCD_BATTERY_ADC_GPIO        GPIO_NUM_4
+#define RLCD_BATTERY_DIVIDER_TOP_OHM 200000.0f
+#define RLCD_BATTERY_DIVIDER_BOTTOM_OHM 100000.0f
 
 // ── RLCD SPI 引脚 ──────────────────────────────────────
 #define RLCD_PIN_DS      GPIO_NUM_5    // Data/Command (DC)

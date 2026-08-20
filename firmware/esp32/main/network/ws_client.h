@@ -22,6 +22,8 @@ void      ws_client_loop(void);               /* 心跳 & 重连 */
 bool      ws_client_is_connected(void);
 bool      ws_client_is_ready(void);
 bool      ws_client_is_tts_active(void);
+bool      ws_client_take_continuous_listening(void);
+void      ws_client_set_continuous_listening_enabled(bool enabled);
 void      ws_client_prepare_for_ota(void);
 void      ws_client_resume_after_ota(void);
 void      ws_client_on_audio_loop(void);

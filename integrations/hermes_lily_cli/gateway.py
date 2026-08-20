@@ -1168,6 +1168,20 @@ def _start_payload(payload: dict[str, Any], body: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def continue_listening_for_device(state: TurnState) -> bool:
+    """Return the session opt-in without changing legacy clients.
+
+    Continuous capture is a device/session capability, not a global gateway
+    default. The public firmware sends this flag on each start frame; clients
+    that omit it keep the original press-to-talk behavior.
+    """
+    metadata = state.metadata if isinstance(state.metadata, dict) else {}
+    return _coerce_bool(
+        metadata.get("continuous_dialogue", metadata.get("hands_free", False)),
+        False,
+    )
+
+
 async def cancel_active_turn(state: TurnState, *, reason: str) -> None:
     await cancel_recording_watchdog(state, reason=reason)
     await cancel_stream_tts_resources(state, reason=reason)
@@ -2585,7 +2599,7 @@ async def send_dialogue_and_tts(
             "scene": dialogue_scene({"evidence": bridge_evidence or {}}),
             "coins_earned": max(0, int(coins_earned or 0)),
             "deferred": bool(deferred),
-            "continue_listening": False,
+            "continue_listening": continue_listening_for_device(state),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,
@@ -3946,7 +3960,7 @@ async def run_stepfun_step_plan_realtime_turn(websocket: Any, state: TurnState, 
             "scene": "home.living_room",
             "coins_earned": 0,
             "deferred": False,
-            "continue_listening": False,
+            "continue_listening": continue_listening_for_device(state),
             "timing": {
                 "provider_stream": "stepfun_realtime",
                 **turn_trigger_payload(state),
@@ -7160,7 +7174,7 @@ async def stream_dialogue_and_tts_from_bridge(
             "scene": dialogue_scene(final_payload),
             "coins_earned": 0,
             "deferred": bool(evidence.get("deferred")),
-            "continue_listening": False,
+            "continue_listening": continue_listening_for_device(state),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,

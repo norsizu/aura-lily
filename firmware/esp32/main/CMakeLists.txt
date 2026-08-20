@@ -20,6 +20,7 @@ idf_component_register(
         "network/ota_update.c"
         "sensors/shtc3.c"
         "sensors/pcf85063.c"
+        "sensors/battery.c"
         "storage/sd_card.c"
         "ui/layout.c"
         "ui/status_bar.c"
@@ -51,6 +52,7 @@ idf_component_register(
     REQUIRES
         driver esp_driver_spi esp_driver_i2c esp_driver_i2s
         esp_driver_sdmmc sdmmc
+        esp_adc
         esp_wifi esp_timer esp_http_server
         esp_http_client app_update
         nvs_flash fatfs
