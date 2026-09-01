@@ -18,6 +18,8 @@ import struct
 from pathlib import Path
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
+from convert_outfit_sheet import convert_sheet as convert_outfit_sheet
+
 SRC_DIR = Path(__file__).parent.parent.parent / "aura_prototype_v8"
 
 OUT_DIR = Path(__file__).parent.parent / "assets"
@@ -202,6 +204,11 @@ def main():
         action="store_true",
         help="Convert scene backgrounds without touching outfit or sprite assets",
     )
+    parser.add_argument(
+        "--outfit-dir",
+        type=Path,
+        help="Directory containing the nine Chinese 3x3 outfit source PNGs",
+    )
     args = parser.parse_args()
 
     src = SRC_DIR
@@ -282,6 +289,32 @@ def main():
             )
         print("\n✅ 场景转换完成！")
         return
+
+    # === 当前九套服装图集 ===
+    # The source sheets are RGB artwork with a white background, so use the
+    # dedicated content-mask converter rather than alpha-only extraction.  It
+    # preserves the shared crop, bottom anchor, and packed atlas format used by
+    # the firmware's Bayer 8x8 Smooth compositor.
+    if args.outfit_dir:
+        outfit_sources = {
+            "pajama": "睡衣.png",
+            "dress": "连衣裙.png",
+            "nightdress": "睡裙.png",
+            "casual_a": "休闲装.png",
+            "professional": "职业装.png",
+            "winter": "冬装.png",
+            "qipao": "旗袍.png",
+            "mamian": "马面裙.png",
+            "hanfu": "汉服.png",
+        }
+        missing = [name for name in outfit_sources.values() if not (args.outfit_dir / name).is_file()]
+        if missing:
+            raise SystemExit(f"Missing outfit source(s): {', '.join(missing)}")
+        for outfit_name, filename in outfit_sources.items():
+            source = args.outfit_dir / filename
+            target = OUT_DIR / "outfits" / f"{outfit_name}.bin"
+            convert_outfit_sheet(source, target)
+        print("\n✅ 服装图集转换完成！")
 
     # === 人物图集 ===
     default_outfit_src = src / "人物.png"
