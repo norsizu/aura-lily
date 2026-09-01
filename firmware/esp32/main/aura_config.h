@@ -119,7 +119,7 @@
 #endif
 #define AURA_OTA_MANIFEST_URL CONFIG_AURA_OTA_MANIFEST_URL
 #define AURA_OTA_RESOURCES_MANIFEST_URL CONFIG_AURA_OTA_RESOURCES_MANIFEST_URL
-#define AURA_ASSETS_VERSION "0.18.0"
+#define AURA_ASSETS_VERSION "0.18.1"
 
 // ── Atlas 九宫格 ─────────────────────────────────────
 #define ATLAS_COLS       3

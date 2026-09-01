@@ -1,5 +1,6 @@
 import hashlib
 import json
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -129,3 +130,46 @@ def test_firmware_exposes_eleven_world_scenes_and_professional_outfit():
     assert all((scene_dir / f"{name}.bin").stat().st_size == 120008 for name in registered_scenes)
     assert all((outfit_dir / f"{name}.bin").stat().st_size == 135008 for name in outfit_names)
     assert not (outfit_dir / "casual_b.bin").exists()
+
+
+def test_outfit_atlas_cells_are_visible_and_bayer_anchor_contract_is_preserved():
+    renderer = (FIRMWARE / "main" / "display" / "renderer.c").read_text(encoding="utf-8")
+    converter = (FIRMWARE / "tools" / "convert_assets.py").read_text(encoding="utf-8")
+    sheet_converter = (FIRMWARE / "tools" / "convert_outfit_sheet.py").read_text(encoding="utf-8")
+
+    # Resource conversion must use the content-mask/shared-crop path for RGB
+    # 1-bit sheets; ordinary alpha-only or threshold-only extraction regresses
+    # the generated source sheets.
+    assert "from convert_outfit_sheet import convert_sheet as convert_outfit_sheet" in converter
+    assert "convert_outfit_sheet(source, target)" in converter
+    assert "src_crop = (" in sheet_converter
+    assert "py = POSE_H - fitted.height - 2" in sheet_converter
+
+    # The calibrated default mode and Bayer table remain in the firmware; the
+    # 25px character anchor is part of the established device layout.
+    assert "static render_dither_mode_t s_dither_mode = DITHER_HYBRID_INK" in renderer
+    assert "static const uint8_t s_bayer8[8][8]" in renderer
+    assert "case DITHER_BAYER8:" in renderer
+    assert "static int s_char_y_offset = 25" in renderer
+
+    outfit_names = [
+        "pajama", "dress", "nightdress", "casual_a", "professional",
+        "winter", "qipao", "mamian", "hanfu",
+    ]
+    for name in outfit_names:
+        data = (FIRMWARE / "assets" / "outfits" / f"{name}.bin").read_bytes()
+        width, height = struct.unpack("<II", data[:8])
+        assert (width, height) == (600, 900)
+        packed = data[8:]
+        pixels = []
+        for value in packed:
+            pixels.extend(((value >> 6) & 3, (value >> 4) & 3, (value >> 2) & 3, value & 3))
+        pixels = pixels[: width * height]
+        for pose in range(9):
+            row, col = divmod(pose, 3)
+            visible = sum(
+                pixels[(row * 300 + y) * width + col * 200 + x] != 0
+                for y in range(300)
+                for x in range(200)
+            )
+            assert visible > 0, f"{name} pose {pose} is empty"

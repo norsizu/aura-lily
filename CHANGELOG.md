@@ -2,6 +2,23 @@
 
 All notable public-release changes are documented here.
 
+## v0.18.1-public - 2026-09-01
+
+### Fixed
+
+- Rebuilt all nine outfit atlases from the current 1-bit nine-pose source
+  sheets, including the Professional replacement for the retired `casual_b`
+  slot. Every atlas keeps the 600x900 header, packed pixel format, shared
+  crop, bottom anchor, and device-side Bayer 8x8 Smooth rendering path.
+- Added per-pose resource validation so no listening, thinking, or reply pose
+  can silently become an empty cell.
+
+### Firmware assets
+
+- `aura-lily-v0.18.1-public-full.bin` is the complete first-flash image.
+- `aura_doudou.bin` is the application-only OTA image.
+- `assets.bin` contains all 11 scenes and all 9 rebuilt outfits.
+
 ## v0.18.0-public - 2026-09-01
 
 ### Added
