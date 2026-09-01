@@ -47,6 +47,7 @@ Aura Lily 使用 Waveshare [ESP32-S3-RLCD-4.2 开发板](https://docs.waveshare.
 - **每天不是固定剧本。** 世界层保留起床、三餐和睡前整理五个生活锚点，再根据时间、天气、心情、体力、饱腹度、压力、好感度和资金生成 4 至 8 个动态活动。天气不是单一开关，状态也不会只映射到一个场景。
 - **语言是一条完整链路。** 中文、英语、日语的界面文本、语音识别结果、回复和 TTS 输出按当前会话语言协同工作。
 - **设备本身是体验的一部分。** 400 x 300 反射式 1-bit 屏幕会呈现人物、服装、场景、字幕、状态和信息板；本地提示音不需要为了每个短提示再请求一次 TTS。
+- **资源可以独立更新。** 当前公开固件包含 11 个世界场景和 9 套服装（含旗袍、马面裙、汉服与职业装）；资源包可单独刷入 `assets` 分区，不必重刷应用。
 
 ## 已实现的能力
 
@@ -139,7 +140,7 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-完整 Web 刷机包和 SHA-256 校验值随每个 Release 发布。固件默认不连接项目服务器，首次启动后请在配网页面填写你自己的 WebSocket 地址。
+完整 Web 刷机包、应用 OTA 镜像、资源包和 SHA-256 校验值随每个 Release 发布。固件默认不连接项目服务器，首次启动后请在配网页面填写你自己的 WebSocket 地址。
 
 #### 普通用户：用 ESP LaunchPad 刷机
 
@@ -158,7 +159,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 配网成功的网络会保留两个凭据槽位，菜单显示对应 SSID。默认不提供 OTA 服务器；请在 `menuconfig > Aura Lily` 中配置自己的 HTTPS 清单 URL，再使用 `tools/make_ota_release.py` 生成固件与资源清单。先上传全部工件，最后再发布 `manifest.json`。
 
-详细的 Hermes 桥接、HTTP 合约和冒烟测试见 [Hermes bridge guide](integrations/hermes_lily_cli/README.md)。
+资源包只更新 `assets` 分区，应用 OTA 只更新当前未使用的 OTA 槽位；两者都不会覆盖已保存的 Wi-Fi。完整首刷镜像会重写分区表和 NVS，首次刷写后需要重新配网。详细的 Hermes 桥接、HTTP 合约和冒烟测试见 [Hermes bridge guide](integrations/hermes_lily_cli/README.md)。
 
 ## 仓库结构
 

@@ -1,6 +1,6 @@
 # Aura 世界场景素材规范
 
-线上世界模型当前需要 10 个视觉场景。源图统一使用 4:3 PNG，建议 800x600 或更大；转换脚本会缩放为设备使用的 400x300 灰度图。
+线上世界模型当前需要 11 个视觉场景。源图统一使用 4:3 PNG，建议 800x600 或更大；转换脚本会缩放为设备使用的 400x300 灰度图。
 
 ## 通用构图
 
@@ -24,6 +24,9 @@
 | `scene_outside_shop.png` | `outside.shop` | 便利店或社区小店内部；成块货架、购物篮或冷柜，不出现可读品牌文字。 |
 | `scene_outside_park.png` | `outside.park` | 附近公园；步道、草地、树木或长椅。 |
 | `scene_outside_mall.png` | `outside.mall` | 商场内部；开阔走道、扶梯或成块店面，不出现可读品牌文字。 |
+| `scene_outside_riverside.png` | `outside.riverside` | 江边或河岸；水面、步道、栏杆或远处岸线，适合散步和短暂停留。 |
+
+服装资源共 9 套：睡衣、洋装、睡裙、休闲装、职业装、冬装、旗袍、马面裙和汉服。职业装替换旧的 `casual_b` 槽位，设备索引保持兼容；`qipao.bin`、`mamian.bin` 和 `hanfu.bin` 均为完整的 600x900 2-bit atlas。
 
 中文同名源图可直接运行：`python3 tools/convert_assets.py --scene-dir /path/to/场景图 --scenes-only`。
 

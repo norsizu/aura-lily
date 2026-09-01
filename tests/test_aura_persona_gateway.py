@@ -319,7 +319,7 @@ def test_world_clock_advances_at_each_scheduled_slot_and_sleeps_before_wake(tmp_
     assert after_night["location_key"] == "home.bedroom"
 
 
-def test_world_plan_can_reach_all_ten_device_scenes():
+def test_world_plan_can_reach_all_eleven_device_scenes():
     locations = set()
     for day in range(1, 367):
         day_key = (dt.date(2026, 1, 1) + dt.timedelta(days=day - 1)).isoformat()
@@ -342,6 +342,7 @@ def test_world_plan_can_reach_all_ten_device_scenes():
         "outside.shop",
         "outside.park",
         "outside.mall",
+        "outside.riverside",
     }
 
 

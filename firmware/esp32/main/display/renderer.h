@@ -16,7 +16,7 @@ typedef enum {
 typedef struct {
     // 显示
     int current_pose;       // 0-8
-    int current_scene;      // living room, study, bedroom, kitchen, balcony, street, cafe, shop, park, mall
+    int current_scene;      // living room, study, bedroom, kitchen, balcony, street, cafe, shop, park, mall, riverside
     int current_outfit;     // 0-16 (0-10=wardrobe, 11-16=shop)
     uint32_t outfit_unlocked; // bitmask: bit N=1 means outfit N owned
     bool dirty;             // 需要重绘

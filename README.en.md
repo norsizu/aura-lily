@@ -47,6 +47,7 @@ Aura Lily is built around the Waveshare [ESP32-S3-RLCD-4.2 board](https://docs.w
 - **A day is not a fixed script.** The world layer keeps five daily anchors (wake, three meals, and nightly wind-down), then generates four to eight dynamic activities from time, weather, mood, energy, satiety, stress, affinity, and funds.
 - **Language is a complete route.** Chinese, English, and Japanese UI text, ASR results, replies, and TTS output follow the active conversation language together.
 - **The device is part of the experience.** The 400 x 300 reflective 1-bit display presents the character, outfits, scenes, subtitles, status, and information board. Short local prompts do not need an extra TTS request.
+- **Assets can be updated independently.** The public firmware includes 11 world scenes and 9 outfits, including Qipao, Mamian Skirt, Hanfu, and Professional; the `assets` partition can be flashed without replacing the application.
 
 ## Included capabilities
 

@@ -281,7 +281,7 @@ typedef struct {
 } shop_item_t;
 static const shop_item_t s_shop_catalog[SHOP_ITEM_COUNT] = {
     { 3, { "休闲装1", "Casual A",  "カジュアルA" }, 50, { "日常", "Daily",   "日常" } },
-    { 4, { "休闲装2", "Casual B",  "カジュアルB" }, 60, { "日常", "Daily",   "日常" } },
+    { 4, { "职业装", "Professional",  "仕事着" }, 60, { "工作", "Work",   "仕事" } },
     { 5, { "冬装",   "Winter",     "冬服" },       70, { "保暖", "Warm",    "あったか" } },
     { 6, { "旗袍",   "Qipao",      "チャイナ" },   80, { "优雅", "Elegant", "優雅" } },
     { 7, { "马面裙", "Mamian",     "馬面裙" },     80, { "古风", "Classic", "古風" } },
@@ -589,8 +589,9 @@ static void auto_outfit_tick(void)
     int mode = sleepwear ? 1 : 0;
     if (mode == s_auto_outfit_mode) return;
 
-    /* 用户今天手动指定过：当天不自动换，次日世界阶段更新后失效。 */
-    if (s_outfit_pin_md == md) {
+    /* 白天用户今天手动指定过则不自动换；进入睡眠时强制换睡衣，
+     * 不受当天手动服装选择阻止。 */
+    if (s_outfit_pin_md == md && !sleepwear) {
         s_auto_outfit_mode = mode;
         return;
     }

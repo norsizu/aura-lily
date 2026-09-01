@@ -104,6 +104,7 @@ static void ensure_scene_loaded(int scene)
         ASSETS_BASE_PATH "/scenes/outside_shop.bin",
         ASSETS_BASE_PATH "/scenes/outside_park.bin",
         ASSETS_BASE_PATH "/scenes/outside_mall.bin",
+        ASSETS_BASE_PATH "/scenes/outside_riverside.bin",
     };
 
     if (!s_scene_buf) return;
@@ -177,7 +178,7 @@ void renderer_init(void)
 static void render_background(const aura_state_t *state)
 {
     int scene = state->current_scene;
-    if (scene < 0 || scene > 9) scene = 0;
+    if (scene < 0 || scene > 10) scene = 0;
     ensure_scene_loaded(scene);
     memcpy(s_graybuf, s_scene_buf, RLCD_WIDTH * RLCD_HEIGHT);
 }
@@ -319,7 +320,7 @@ static const char * const s_outfit_files[] = {
     ASSETS_BASE_PATH "/outfits/dress.bin",      /* 1 洋装   免费     */
     ASSETS_BASE_PATH "/outfits/nightdress.bin", /* 2 睡裙   50       */
     ASSETS_BASE_PATH "/outfits/casual_a.bin",   /* 3 休闲装1 50      */
-    ASSETS_BASE_PATH "/outfits/casual_b.bin",   /* 4 休闲装2 60      */
+    ASSETS_BASE_PATH "/outfits/professional.bin", /* 4 职业装 60      */
     ASSETS_BASE_PATH "/outfits/winter.bin",     /* 5 冬装   70       */
     ASSETS_BASE_PATH "/outfits/qipao.bin",      /* 6 旗袍   80       */
     ASSETS_BASE_PATH "/outfits/mamian.bin",     /* 7 马面裙 80       */
@@ -637,15 +638,15 @@ int renderer_get_char_y_offset(void)
  * Outfit name lookup (matches outfit_files[] order in render_character)
  * -------------------------------------------------------------------------*/
 static const char * const s_outfit_names[] = {
-    "睡衣", "洋装", "睡裙", "休闲装1", "休闲装2",
+    "睡衣", "洋装", "睡裙", "休闲装1", "职业装",
     "冬装", "旗袍", "马面裙", "汉服",
 };
 static const char * const s_outfit_names_en[] = {
-    "Pajamas", "Dress", "Nightdress", "Casual A", "Casual B",
+    "Pajamas", "Dress", "Nightdress", "Casual A", "Professional",
     "Winter", "Qipao", "Mamian Skirt", "Hanfu",
 };
 static const char * const s_outfit_names_ja[] = {
-    "パジャマ", "ワンピース", "ネグリジェ", "カジュアルA", "カジュアルB",
+    "パジャマ", "ワンピース", "ネグリジェ", "カジュアルA", "仕事着",
     "冬服", "チャイナ", "馬面裙", "漢服",
 };
 #define OUTFIT_NAME_COUNT ((int)(sizeof(s_outfit_names) / sizeof(s_outfit_names[0])))

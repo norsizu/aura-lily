@@ -23,12 +23,12 @@ Run from `firmware/esp32` after `idf.py build`:
 
 ```bash
 python tools/make_ota_release.py \
-  --version 0.16 \
-  --assets-version 0.16.0 \
+  --version 0.18.0 \
+  --assets-version 0.18.0 \
   --base-url https://updates.example.com/aura/stable \
   --asset scenes/outside_park.bin \
   --asset scenes/outside_mall.bin \
-  --output releases/ota/0.16
+  --output releases/ota/0.18.0
 ```
 
 Omit `--asset` when a release changes only the application. Publish the

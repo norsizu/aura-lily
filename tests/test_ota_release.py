@@ -98,16 +98,34 @@ def test_ota_source_enables_rollback_and_https_manifest():
     assert "content_length < 0" in source
 
 
-def test_firmware_exposes_ten_world_scenes():
+def test_firmware_exposes_eleven_world_scenes_and_professional_outfit():
     messages = (FIRMWARE / "main" / "protocol" / "messages.c").read_text(encoding="utf-8")
     renderer = (FIRMWARE / "main" / "display" / "renderer.c").read_text(encoding="utf-8")
     main = (FIRMWARE / "main" / "main.c").read_text(encoding="utf-8")
     websocket = (FIRMWARE / "main" / "network" / "ws_client.c").read_text(encoding="utf-8")
-    assert '"outside.park", "outside.mall"' in messages
+    assert '"outside.park", "outside.mall", "outside.riverside"' in messages
     assert '"/scenes/street.bin"' in renderer
     assert '"/scenes/outside_neighborhood.bin"' not in renderer
     assert '"/scenes/outside_park.bin"' in renderer
     assert '"/scenes/outside_mall.bin"' in renderer
+    assert '"/scenes/outside_riverside.bin"' in renderer
+    assert '"/outfits/professional.bin"' in renderer
+    assert '"/outfits/casual_b.bin"' not in renderer
     assert "scene > 7" not in renderer
     assert 'cJSON_GetObjectItem(payload, "outfit_mode")' in websocket
     assert "AUTO_OUTFIT_NIGHT_START" not in main
+
+    scene_dir = FIRMWARE / "assets" / "scenes"
+    outfit_dir = FIRMWARE / "assets" / "outfits"
+    registered_scenes = [
+        "home_living_room", "home_study", "home_bedroom", "home_kitchen",
+        "home_balcony", "street", "outside_cafe", "outside_shop",
+        "outside_park", "outside_mall", "outside_riverside",
+    ]
+    outfit_names = [
+        "pajama", "dress", "nightdress", "casual_a", "professional",
+        "winter", "qipao", "mamian", "hanfu",
+    ]
+    assert all((scene_dir / f"{name}.bin").stat().st_size == 120008 for name in registered_scenes)
+    assert all((outfit_dir / f"{name}.bin").stat().st_size == 135008 for name in outfit_names)
+    assert not (outfit_dir / "casual_b.bin").exists()

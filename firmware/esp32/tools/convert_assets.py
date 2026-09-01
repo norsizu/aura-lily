@@ -222,6 +222,7 @@ def main():
             "outside_shop": "便利店.png",
             "outside_park": "公园.png",
             "outside_mall": "商场.png",
+            "outside_riverside": "江边.png",
         }
     else:
         scene_src_dir = src
@@ -236,6 +237,7 @@ def main():
             "outside_shop": "scene_outside_shop.png",
             "outside_park": "scene_outside_park.png",
             "outside_mall": "scene_outside_mall.png",
+            "outside_riverside": "scene_outside_riverside.png",
         }
     converted_scenes = 0
     for scene_name, filename in scene_sources.items():

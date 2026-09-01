@@ -1089,6 +1089,17 @@ def _choose_outing_axis(
                 "life_axis": "browse",
             }
         )
+    if mood >= 65 and energy >= 50:
+        options.append(
+            {
+                "activity_type": "walk",
+                "title": _pick(rng, ["去河边走走", "沿着河岸吹会儿风"]),
+                "location_key": "outside.riverside",
+                "location_label": "河岸步道",
+                "activity_label": "在河边散步",
+                "life_axis": "riverside_walk",
+            }
+        )
     return dict(rng.choice(options))
 
 
@@ -1360,6 +1371,7 @@ def _canonicalize_current(current: dict[str, Any], *, canon: WorldCanon) -> dict
         "daily_shop": "outside.shop",
         "park": "outside.park",
         "mall": "outside.mall",
+        "riverside": "outside.riverside",
     }
     if raw_key == "home":
         if activity_key == "meal":

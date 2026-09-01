@@ -79,11 +79,12 @@ def default_world_canon() -> WorldCanon:
             "home.bedroom": {"label": "卧室", "kind": "home", "connections": ["home.study"], "description": "休息和睡眠的地方。"},
             "home.kitchen": {"label": "厨房", "kind": "home", "connections": ["home.living_room"], "description": "准备简单饭菜和热饮的地方。"},
             "home.balcony": {"label": "阳台", "kind": "home", "connections": ["home.living_room"], "description": "能感受到室外光线和天气变化。"},
-            "outside.neighborhood": {"label": "住处附近", "kind": "outside", "connections": ["home.living_room", "outside.cafe", "outside.shop", "outside.park", "outside.mall"], "description": "日常散步和短暂停留的街区。"},
+            "outside.neighborhood": {"label": "住处附近", "kind": "outside", "connections": ["home.living_room", "outside.cafe", "outside.shop", "outside.park", "outside.mall", "outside.riverside"], "description": "日常散步和短暂停留的街区。"},
             "outside.cafe": {"label": "附近咖啡店", "kind": "outside", "connections": ["outside.neighborhood"], "description": "偶尔坐下来休息的安静地方。"},
             "outside.shop": {"label": "社区小店", "kind": "outside", "connections": ["outside.neighborhood"], "description": "补充日常用品的地方。"},
             "outside.park": {"label": "附近公园", "kind": "outside", "connections": ["outside.neighborhood"], "description": "适合散步、透气和在长椅上休息的公园。"},
             "outside.mall": {"label": "附近商场", "kind": "outside", "connections": ["outside.neighborhood"], "description": "可以逛店、吃东西和处理集中采购的商场。"},
+            "outside.riverside": {"label": "河岸步道", "kind": "outside", "connections": ["outside.neighborhood"], "description": "沿水边散步、吹风和短暂停留的地方。"},
         },
         objects={
             "study.desk": {"label": "书桌", "location": "home.study", "state": "tidy"},

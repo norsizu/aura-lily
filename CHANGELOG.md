@@ -2,6 +2,41 @@
 
 All notable public-release changes are documented here.
 
+## v0.18.0-public - 2026-09-01
+
+### Added
+
+- Added the riverside scene, bringing the firmware world set to 11 scenes.
+- Added the Professional outfit in the former outfit slot 4; the public asset
+  set now contains 9 outfits and no longer ships `casual_b`.
+
+### Changed
+
+- Rebuilt all world backgrounds from the current 1-bit source artwork while
+  retaining the firmware's 8x8 Bayer character dithering and crop rules.
+- Added `outside.riverside` to the public world canon and device protocol.
+
+### Firmware assets
+
+- `aura_doudou.bin` is the application-only OTA image for devices already using
+  the dual-slot OTA layout.
+- `assets.bin` contains the matching 11-scene and 9-outfit resource partition.
+- `aura-lily-v0.18.0-public-full.bin` is the complete first-flash image for
+  address `0x0000`.
+
+## v0.17.16-public - 2026-08-31
+
+### Fixed
+
+- Nighttime automatic sleepwear now overrides the same-day manual outfit pin,
+  so the companion can reliably settle into sleepwear during the night phase.
+
+### Firmware assets
+
+- `aura-0.17.16.bin` is the application-only OTA image for devices already
+  using the dual-slot OTA layout.
+- The resource partition is unchanged from the previous public release.
+
 ## v0.17.1-public - 2026-08-14
 
 ### Fixed

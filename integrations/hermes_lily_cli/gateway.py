@@ -2526,6 +2526,7 @@ WORLD_LOCATION_SCENES = {
     "outside.shop": "outside.shop",
     "outside.park": "outside.park",
     "outside.mall": "outside.mall",
+    "outside.riverside": "outside.riverside",
     "home": "home.living_room",
     "desk": "home.study",
     "neighborhood_food": "outside.neighborhood",
@@ -2534,6 +2535,7 @@ WORLD_LOCATION_SCENES = {
     "daily_shop": "outside.shop",
     "park": "outside.park",
     "mall": "outside.mall",
+    "riverside": "outside.riverside",
 }
 
 

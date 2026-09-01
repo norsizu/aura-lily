@@ -13,7 +13,7 @@ static const char *POSE_NAMES[] = {
 static const char *SCENE_NAMES[] = {
     "home.living_room", "home.study", "home.bedroom", "home.kitchen",
     "home.balcony", "outside.neighborhood", "outside.cafe", "outside.shop",
-    "outside.park", "outside.mall",
+    "outside.park", "outside.mall", "outside.riverside",
 };
 
 int msg_pose_to_index(const char *name)
@@ -37,7 +37,8 @@ int msg_scene_to_index(const char *name)
     if (strcmp(name, "daily_shop") == 0) return 7;
     if (strcmp(name, "nearby_walk") == 0 || strcmp(name, "park") == 0) return 8;
     if (strcmp(name, "mall") == 0) return 9;
-    for (int i = 0; i < 10; i++) {
+    if (strcmp(name, "riverside") == 0 || strcmp(name, "river") == 0) return 10;
+    for (int i = 0; i < 11; i++) {
         if (strcmp(name, SCENE_NAMES[i]) == 0) return i;
     }
     return -1;
