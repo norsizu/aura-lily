@@ -450,19 +450,29 @@ class LilyPersonaStore:
         scope: PersonaScope,
         *,
         event_prefix: str = "world.",
+        event_prefixes: tuple[str, ...] | list[str] | None = None,
         limit: int = 4,
     ) -> list[dict[str, Any]]:
         self._ensure_schema()
-        prefix = str(event_prefix or "").strip()
+        # W1 起世界流水改用 ``ledger.<source>`` 事件类型，读取方（prompt 的
+        # "近期世界变化"、离线回顾、追溯工具）需要同时看到新旧两种前缀。
+        prefixes = [str(item).strip() for item in (event_prefixes or []) if str(item or "").strip()]
+        if not prefixes:
+            single = str(event_prefix or "").strip()
+            prefixes = [single] if single else []
 
-        def op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-            where = "event_type LIKE ?" if prefix else "visibility != 'debug'"
-            params: tuple[Any, ...] = (
-                (*scope.as_tuple(), f"{prefix}%", max(1, min(20, int(limit or 1))))
-                if prefix
-                else (*scope.as_tuple(), max(1, min(20, int(limit or 1))))
-            )
-            rows = conn.execute(
+        def op(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            if prefixes:
+                where = "(" + " OR ".join("event_type LIKE ?" for _ in prefixes) + ")"
+                params: tuple[Any, ...] = (
+                    *scope.as_tuple(),
+                    *[f"{prefix}%" for prefix in prefixes],
+                    max(1, min(20, int(limit or 1))),
+                )
+            else:
+                where = "visibility != 'debug'"
+                params = (*scope.as_tuple(), max(1, min(20, int(limit or 1))))
+            return conn.execute(
                 f"""
                 SELECT id, event_type, event_key, title, description, location,
                        activity, visibility, intensity, delta_json, payload_json,
@@ -474,9 +484,9 @@ class LilyPersonaStore:
                 """,
                 params,
             ).fetchall()
-            return [_life_event_from_row(row) for row in rows]
 
-        return list(reversed(self._execute_retryable(op)))
+        # 读取方按"最后几条就是最近发生的"使用，所以翻回时间正序。
+        return list(reversed([_life_event_from_row(row) for row in self._execute_retryable(op)]))
 
     def _ensure_schema(self) -> None:
         key = str(self.db_path)

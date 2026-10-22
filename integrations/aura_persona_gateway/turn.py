@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import re
 import time
 import uuid
@@ -23,7 +24,7 @@ from .response_contract import (
     normalize_spoken_reply,
 )
 from .runtime import CONFIGURED_VALUE_MARKER, AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
-from .state_rules import apply_agent_reply_delta, apply_user_interaction_delta
+from .state_rules import apply_agent_reply_delta, apply_time_recovery, apply_user_interaction_delta
 from .store import LilyPersonaStore
 from .voice_turn import (
     BackgroundTask,
@@ -34,11 +35,96 @@ from .voice_turn import (
 )
 from .weather import cached_user_weather_snapshot, refresh_cached_weather_if_needed, refresh_user_weather_if_needed
 from .world import build_world_snapshot
+from .world_ledger import record_state_change, state_delta
 
 VOICE_STREAM_MAX_TOKENS = 128
 VOICE_STREAM_DETAIL_MAX_TOKENS = 384
 STEPFUN_REASONING_STREAM_MIN_TOKENS = 384
 STEPFUN_REASONING_MODELS = {"step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603", "step-router-v1"}
+
+
+def _record_interaction_ledger(
+    *,
+    store: Any,
+    scope: Any,
+    state: dict[str, Any],
+    recovered: dict[str, Any],
+    updated: dict[str, Any],
+    now: float,
+) -> None:
+    """W1：对话回合里的每一分数值变化都要有账本流水。
+
+    ``state_rules`` 的规则本身不变，这里只负责把"时间恢复"和"用户互动"两段
+    差异分别记下来，事后才说得清体力为什么回来了、心情为什么好了。
+    """
+    if not hasattr(store, "record_life_event"):
+        return
+    stamp = int(now * 1_000_000)
+    if recovered is not state and state_delta(state, recovered):
+        record_state_change(
+            store,
+            scope,
+            state,
+            recovered,
+            source="interaction",
+            cause="时间恢复：离开了一段时间，体力和饱腹自己回来了",
+            title="休息了一会儿，状态自己回来了",
+            event_key=f"interaction:recovery:{stamp}",
+            payload={"stage": "time_recovery"},
+        )
+    if state_delta(recovered, updated):
+        record_state_change(
+            store,
+            scope,
+            recovered,
+            updated,
+            source="interaction",
+            cause="用户互动：陪你聊了一轮",
+            title="和你聊了一会儿",
+            event_key=f"interaction:turn:{stamp}",
+            payload={"stage": "user_interaction"},
+        )
+
+
+def _record_reply_ledger(
+    *,
+    store: Any,
+    scope: Any,
+    state: dict[str, Any],
+    updated: dict[str, Any],
+    ok: bool,
+    now: float | None = None,
+) -> None:
+    """W1：一次回复带来的心情/压力变化也记账。"""
+    if not hasattr(store, "record_life_event"):
+        return
+    if not state_delta(state, updated):
+        return
+    record_state_change(
+        store,
+        scope,
+        state,
+        updated,
+        source="interaction",
+        cause="完成一次回复" if ok else "回复没成功，有点烦躁",
+        title="认真回了一句话" if ok else "一句话没回好",
+        event_key=f"interaction:reply:{_reply_stamp(updated, now)}",
+        payload={"stage": "agent_reply", "ok": bool(ok)},
+    )
+
+
+# 同一微秒内的多次回复（批量回复、测试快跑）也要各占一条流水，用自增序号兜底。
+_REPLY_LEDGER_SEQ = itertools.count(1)
+
+
+def _reply_stamp(state: dict[str, Any], now: float | None) -> str:
+    """回复流水的事件 key：优先用这次回复自己的时间戳。"""
+    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    try:
+        base = int(float(metadata.get("last_reply_at")) * 1_000_000)
+    except (TypeError, ValueError):
+        base = int(float(now if now is not None else time.time()) * 1_000_000)
+    return f"{base}-{next(_REPLY_LEDGER_SEQ)}"
 
 
 def _conversation_language(metadata: dict[str, Any] | None) -> str:
@@ -108,7 +194,20 @@ class AuraPersonaGateway:
         voice_low_latency = _is_voice_gateway_turn(metadata)
         state = self.store.get_or_create_state(scope)
         speculative = _is_speculative_turn(metadata)
-        updated_state = state if speculative else apply_user_interaction_delta(state)
+        updated_state = state
+        if not speculative:
+            interaction_now = time.time()
+            # 时间恢复和用户互动分开记账，事后能分清体力为什么变（W1）。
+            recovered_state = apply_time_recovery(state, now=interaction_now)
+            updated_state = apply_user_interaction_delta(state, now=interaction_now)
+            _record_interaction_ledger(
+                store=self.store,
+                scope=scope,
+                state=state,
+                recovered=recovered_state,
+                updated=updated_state,
+                now=interaction_now,
+            )
         if not speculative:
             self.store.save_state(scope, updated_state)
         assets = load_persona_assets(self.config)
@@ -144,6 +243,7 @@ class AuraPersonaGateway:
             voice_low_latency=voice_low_latency,
             recent_messages=recent,
             persist=not speculative,
+            offline_recap=True,
         )
         voice_turn = _with_grounded_current_voice_reply(
             voice_turn,
@@ -301,7 +401,15 @@ class AuraPersonaGateway:
             },
         )
         state = self.store.get_or_create_state(self.config.scope)
-        self.store.save_state(self.config.scope, apply_agent_reply_delta(state, ok=model_result.ok))
+        updated_state = apply_agent_reply_delta(state, ok=model_result.ok)
+        _record_reply_ledger(
+            store=self.store,
+            scope=self.config.scope,
+            state=state,
+            updated=updated_state,
+            ok=model_result.ok,
+        )
+        self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,
@@ -999,7 +1107,15 @@ class AuraPersonaGateway:
                 },
             )
             state = self.store.get_or_create_state(self.config.scope)
-            self.store.save_state(self.config.scope, apply_agent_reply_delta(state, ok=model_result.ok))
+            updated_state = apply_agent_reply_delta(state, ok=model_result.ok)
+            _record_reply_ledger(
+                store=self.store,
+                scope=self.config.scope,
+                state=state,
+                updated=updated_state,
+                ok=model_result.ok,
+            )
+            self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,
@@ -1245,7 +1361,15 @@ class AuraPersonaGateway:
             },
         )
         state = self.store.get_or_create_state(self.config.scope)
-        self.store.save_state(self.config.scope, apply_agent_reply_delta(state, ok=True))
+        updated_state = apply_agent_reply_delta(state, ok=True)
+        _record_reply_ledger(
+            store=self.store,
+            scope=self.config.scope,
+            state=state,
+            updated=updated_state,
+            ok=True,
+        )
+        self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,
@@ -1389,7 +1513,15 @@ class AuraPersonaGateway:
             },
         )
         state = self.store.get_or_create_state(self.config.scope)
-        self.store.save_state(self.config.scope, apply_agent_reply_delta(state, ok=True))
+        updated_state = apply_agent_reply_delta(state, ok=True)
+        _record_reply_ledger(
+            store=self.store,
+            scope=self.config.scope,
+            state=state,
+            updated=updated_state,
+            ok=True,
+        )
+        self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,

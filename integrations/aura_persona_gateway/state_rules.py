@@ -141,6 +141,12 @@ def apply_user_interaction_delta(state: dict[str, Any], *, now: float | None = N
     updated = dict(apply_time_recovery(state, now=now))
     metadata = _metadata(updated)
     ts = float(now if now is not None else time.time())
+    # W3 离线回顾要的是"上一轮用户真的在"的时刻：last_* 每轮都会被推进，
+    # 所以先把旧值挪到 previous_*，再把本轮时间写进 last_*。
+    previous_interaction = metadata.get("last_user_interaction_at")
+    metadata["last_user_interaction_at"] = ts
+    if previous_interaction is not None:
+        metadata["previous_user_interaction_at"] = previous_interaction
     metadata["last_interaction_at"] = ts
     # 恢复锚点跟着每轮推进：正在对话的时段不算“闲置”，不回体力。
     metadata["last_recovery_at"] = ts

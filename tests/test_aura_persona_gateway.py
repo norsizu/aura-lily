@@ -442,7 +442,29 @@ def test_completed_meal_and_hidden_drive_effects_are_persisted_once(tmp_path):
     assert updated["metadata"]["social_need"] < state["metadata"]["social_need"]
     assert repeated["satiety"] == updated["satiety"]
     assert repeated["beans"] == updated["beans"]
-    assert len(store.list_recent_life_events(config.scope, event_prefix="world.slot_effect", limit=10)) == 1
+    # W1 起日程结算写进世界账本，事件类型从 world.slot_effect 变成 ledger.world_clock。
+    ledger_events = store.list_recent_life_events(config.scope, event_prefix="ledger.world_clock", limit=10)
+    assert len(ledger_events) == 1
+    ledger_payload = ledger_events[0]["payload"]
+    assert ledger_payload["source"] == "world_clock"
+    assert ledger_payload["slot_key"] == "lunch"
+    assert ledger_payload["cause"] == "按日程完成：吃了一顿饭"
+    assert ledger_payload["before"]["satiety"] == 30
+    assert ledger_payload["after"]["satiety"] == updated["satiety"]
+    assert ledger_events[0]["delta"]["beans"] == -20
+    # prompt 的"近期世界变化"要同时读到旧 world. 前缀和新 ledger. 前缀。
+    combined = store.list_recent_life_events(
+        config.scope,
+        event_prefixes=("world.", "ledger."),
+        limit=10,
+    )
+    assert all(str(event["event_type"]).startswith(("world.", "ledger.")) for event in combined)
+    assert [event for event in combined if event["event_type"] == "ledger.world_clock"] == ledger_events
+    # 结算末尾的驱动混合也记账，隐藏驱动的漂移同样有出处。
+    blend_events = [event for event in combined if event["event_type"] == "ledger.drive_blend"]
+    assert [event["delta"] for event in blend_events] == [{"social_need": -8}, {"curiosity": 4}]
+    assert blend_events[0]["payload"]["cause"] == "社交从 70 漂到 62"
+    assert updated["metadata"]["drive_ledger_baseline"] == {"social_need": 62, "curiosity": 44}
 
 
 def test_world_canon_adds_new_default_locations_to_older_home_file(tmp_path):
