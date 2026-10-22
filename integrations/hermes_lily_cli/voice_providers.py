@@ -43,6 +43,31 @@ class VoiceProviderError(RuntimeError):
     pass
 
 
+# 服务端解析出的情绪（E1 集合）→ 各服务商请求体里的情绪字段。
+# 只映射有对应声学参数的；shy/neutral 不传，让服务商保持默认音色。
+MINIMAX_EMOTION_MAP = {
+    "happy": "happy",
+    "excited": "happy",
+    "sad": "sad",
+    "worried": "fearful",
+    "pouty": "angry",
+    "surprised": "surprised",
+}
+
+
+def minimax_emotion(emotion: Any) -> str:
+    """E1 情绪 → MiniMax voice_setting.emotion；空串表示不传。"""
+    return MINIMAX_EMOTION_MAP.get(str(emotion or "").strip().lower(), "")
+
+
+def volcengine_emotion_debug(emotion: Any) -> dict[str, Any]:
+    """火山请求体的情绪字段格式未确认：只给调用方记 debug，不随请求发送。"""
+    value = str(emotion or "").strip().lower()
+    if not value:
+        return {}
+    return {"emotion": value, "sent": False, "reason": "volcengine_emotion_field_unconfirmed"}
+
+
 def provider_options(runtime_config: Any, kind: str) -> dict[str, Any]:
     raw = getattr(runtime_config, f"{kind}_provider_options", {}) or {}
     return dict(raw) if isinstance(raw, dict) else {}
@@ -281,7 +306,9 @@ def baidu_access_token(options: dict[str, Any], fallback: str, *, timeout: float
     return token
 
 
-def synthesize_aliyun_nls(runtime_config: Any, text: str, *, sample_rate: int, timeout: float) -> bytes:
+def synthesize_aliyun_nls(runtime_config: Any, text: str, *, sample_rate: int, timeout: float, emotion: str = "") -> bytes:
+    # 阿里云 NLS 没有可用的情绪音色参数，emotion 在这里被忽略。
+    del emotion
     options = provider_options(runtime_config, "tts")
     token = provider_text(options, "token", getattr(runtime_config, "tts_api_key", ""))
     appkey = provider_text(options, "appkey")
@@ -304,7 +331,10 @@ def synthesize_aliyun_nls(runtime_config: Any, text: str, *, sample_rate: int, t
     return raw
 
 
-def synthesize_volcengine(runtime_config: Any, text: str, *, sample_rate: int, timeout: float) -> bytes:
+def synthesize_volcengine(runtime_config: Any, text: str, *, sample_rate: int, timeout: float, emotion: str = "") -> bytes:
+    # emotion 只被记录下来（volcengine_emotion_debug），不写进请求体：
+    # 火山这个端点的情绪字段格式还没确认，猜错字段名会让整次合成失败。
+    del emotion
     options = provider_options(runtime_config, "tts")
     appid = provider_text(options, "appid")
     cluster = provider_text(options, "cluster")
@@ -329,7 +359,9 @@ def synthesize_volcengine(runtime_config: Any, text: str, *, sample_rate: int, t
         raise VoiceProviderError("火山引擎 TTS 音频无效") from exc
 
 
-def synthesize_baidu(runtime_config: Any, text: str, *, sample_rate: int, timeout: float) -> bytes:
+def synthesize_baidu(runtime_config: Any, text: str, *, sample_rate: int, timeout: float, emotion: str = "") -> bytes:
+    # 百度 TTS 只有固定音色，没有情绪参数。
+    del emotion
     options = provider_options(runtime_config, "tts")
     token = baidu_access_token(options, getattr(runtime_config, "tts_api_key", ""), timeout=timeout)
     payload = urlencode({
@@ -347,7 +379,7 @@ def synthesize_baidu(runtime_config: Any, text: str, *, sample_rate: int, timeou
     return raw
 
 
-def synthesize_minimax(runtime_config: Any, text: str, *, sample_rate: int, timeout: float) -> bytes:
+def synthesize_minimax(runtime_config: Any, text: str, *, sample_rate: int, timeout: float, emotion: str = "") -> bytes:
     options = provider_options(runtime_config, "tts")
     api_key = provider_text(options, "api_key", getattr(runtime_config, "tts_api_key", ""))
     group_id = provider_text(options, "group_id")
@@ -355,9 +387,14 @@ def synthesize_minimax(runtime_config: Any, text: str, *, sample_rate: int, time
         raise VoiceProviderError("MiniMax TTS 需要 group_id 和 API Key")
     url = str(getattr(runtime_config, "tts_base_url", "") or "https://api.minimaxi.com/v1/t2a_v2")
     sep = "&" if "?" in url else "?"
+    voice_setting = {"voice_id": str(getattr(runtime_config, "tts_voice", "") or provider_text(options, "voice_id", "female-shaonv")), "speed": float(provider_text(options, "speed", "1")), "vol": float(provider_text(options, "volume", "1")), "pitch": int(provider_text(options, "pitch", "0"))}
+    # 情绪是可选字段：没有对应声学参数的情绪就不传，避免服务商报错。
+    minimax_emotion_value = minimax_emotion(emotion)
+    if minimax_emotion_value:
+        voice_setting["emotion"] = minimax_emotion_value
     payload = {
         "model": str(getattr(runtime_config, "tts_model", "") or "speech-2.6-hd"), "text": text, "stream": False,
-        "voice_setting": {"voice_id": str(getattr(runtime_config, "tts_voice", "") or provider_text(options, "voice_id", "female-shaonv")), "speed": float(provider_text(options, "speed", "1")), "vol": float(provider_text(options, "volume", "1")), "pitch": int(provider_text(options, "pitch", "0"))},
+        "voice_setting": voice_setting,
         "audio_setting": {"sample_rate": sample_rate, "bitrate": 128000, "format": "pcm", "channel": 1},
     }
     result = _json_request(f"{url}{sep}GroupId={group_id}", payload, _bearer_headers(api_key), timeout)
@@ -440,7 +477,9 @@ def transcribe_tencent(runtime_config: Any, wav_bytes: bytes, *, timeout: float)
     return str(response.get("Result") or "").strip()
 
 
-def synthesize_tencent(runtime_config: Any, text: str, *, sample_rate: int, timeout: float) -> bytes:
+def synthesize_tencent(runtime_config: Any, text: str, *, sample_rate: int, timeout: float, emotion: str = "") -> bytes:
+    # 腾讯云 TTS 只有固定音色，没有情绪参数。
+    del emotion
     options = provider_options(runtime_config, "tts")
     secret_id = provider_text(options, "secret_id")
     secret_key = provider_text(options, "secret_key", getattr(runtime_config, "tts_api_key", ""))

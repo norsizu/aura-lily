@@ -15,6 +15,14 @@ from integrations.hermes_lily_cli.runtime_config import load_hermes_provider_cat
 from .assets import load_persona_assets
 from .config import PersonaGatewayConfig, load_persona_config
 from .context import PersonaContext, build_persona_context
+from .emotion_engine import (
+    EmotionTagStripper,
+    emotion_label,
+    emotion_ledger_cause,
+    emotion_mood_delta,
+    resolve_turn_emotion,
+    write_emotion_state,
+)
 from .grounded_intent import classify_grounded_current_intent
 from .llm import AGENT_TASK_MARKER, DirectLlmClient, DirectLlmConfig
 from .outlets import evaluate_lily_outlets
@@ -35,7 +43,7 @@ from .voice_turn import (
 )
 from .weather import cached_user_weather_snapshot, refresh_cached_weather_if_needed, refresh_user_weather_if_needed
 from .world import build_world_snapshot
-from .world_ledger import record_state_change, state_delta
+from .world_ledger import apply_world_change, record_state_change, state_delta
 
 VOICE_STREAM_MAX_TOKENS = 128
 VOICE_STREAM_DETAIL_MAX_TOKENS = 384
@@ -125,6 +133,72 @@ def _reply_stamp(state: dict[str, Any], now: float | None) -> str:
     except (TypeError, ValueError):
         base = int(float(now if now is not None else time.time()) * 1_000_000)
     return f"{base}-{next(_REPLY_LEDGER_SEQ)}"
+
+
+def _record_emotion_turn(
+    *,
+    store: Any,
+    scope: Any,
+    state: dict[str, Any],
+    request_id: str,
+    user_text: str,
+    reply_text: str,
+    llm_emotion: str = "",
+    emotion_source: str = "",
+    speculative: bool = False,
+    now: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """E2/E3：定下这一轮的情绪，把后果写进世界模型。
+
+    返回 ``(情绪事实, 新 state)``。情绪事实同时进 turn 的 debug、消息 metadata
+    和 evidence，网关靠它填 ``dialogue.payload.emotion`` 和 TTS 情绪参数。
+    推测回合（speculative）不写账本、不落状态，只返回评估结果。
+    """
+    resolution = resolve_turn_emotion(
+        llm_emotion=llm_emotion,
+        user_text=user_text,
+        reply_text=reply_text,
+        state=state,
+    )
+    if emotion_source:
+        # 规则回复（voice_turn fastpath）的情绪是规则给的，不是 LLM 自评。
+        resolution["source"] = emotion_source
+    emotion = str(resolution.get("emotion") or "")
+    resolution["label"] = emotion_label(emotion)
+    resolution["speculative"] = bool(speculative)
+    updated = state
+    if speculative or not hasattr(store, "record_life_event"):
+        return resolution, updated
+    stamp = float(now if now is not None else time.time())
+    write_emotion_state(
+        updated,
+        emotion=emotion,
+        cause=resolution.get("cause"),
+        intensity=resolution.get("intensity"),
+        at=stamp,
+    )
+    mood_delta = emotion_mood_delta(emotion)
+    if mood_delta:
+        # 0 不记账（neutral/surprised），否则时间线会被无意义的流水刷满。
+        updated, summary = apply_world_change(
+            store,
+            scope,
+            updated,
+            {"mood": mood_delta},
+            source="emotion",
+            cause=emotion_ledger_cause(emotion, user_text),
+            title=f"情绪：{emotion_label(emotion)}",
+            event_key=f"emotion:{request_id}",
+        )
+        if summary:
+            resolution["ledger"] = {
+                "event_key": summary.get("event_key"),
+                "delta": summary.get("delta"),
+                "before": summary.get("before"),
+                "after": summary.get("after"),
+                "cause": summary.get("cause"),
+            }
+    return resolution, updated
 
 
 def _conversation_language(metadata: dict[str, Any] | None) -> str:
@@ -343,6 +417,7 @@ class AuraPersonaGateway:
                 voice_turn=voice_turn,
                 context=context,
                 setup_debug=setup_debug,
+                user_text=user_text,
             )
         if voice_turn.verdict == VoiceTurnVerdict.SILENT_DROP:
             return self._finish_silent_voice_turn(
@@ -361,6 +436,7 @@ class AuraPersonaGateway:
                 voice_turn=voice_turn,
                 context=context,
                 setup_debug=setup_debug,
+                user_text=user_text,
             )
         model_result = self._run_aura_model(
             context.prompt,
@@ -377,6 +453,18 @@ class AuraPersonaGateway:
             else {}
         )
         model_stop_reason = str(model_result.evidence.get("stop_reason") or "")
+        # E2.2：非流式路径也要把第一行的 <emo:X> 剥掉，情绪单独取出来。
+        emotion_tags = EmotionTagStripper()
+        model_response = emotion_tags.feed(model_result.response) + emotion_tags.finish()
+        llm_emotion = emotion_tags.emotion or emotion_tags.raw_emotion
+        model_result = HermesLilyResult(
+            ok=model_result.ok,
+            status=model_result.status,
+            response=model_response,
+            request_id=model_result.request_id,
+            latency_ms=model_result.latency_ms,
+            evidence=dict(model_result.evidence or {}),
+        )
         reply = normalize_spoken_reply(model_result.response)
         if model_quality_guard and model_stop_reason.startswith("voice_quality_guard"):
             response = reply.text
@@ -386,6 +474,18 @@ class AuraPersonaGateway:
         reply_debug = reply.to_debug(raw_response=model_result.response)
         if quality_guard:
             reply_debug["quality_guard"] = quality_guard
+        state = self.store.get_or_create_state(self.config.scope)
+        emotion_facts, state = _record_emotion_turn(
+            store=self.store,
+            scope=self.config.scope,
+            state=state,
+            request_id=request_id,
+            user_text=user_text,
+            reply_text=response,
+            llm_emotion=llm_emotion,
+        )
+        self.store.save_state(self.config.scope, state)
+        reply_debug["emotion"] = emotion_facts
         self.store.save_im_message(
             self.config.scope,
             direction="aura",
@@ -398,6 +498,7 @@ class AuraPersonaGateway:
                 "reply_to_message_id": user_message_id,
                 "voice_turn": voice_turn.to_dict(),
                 "reply_contract": reply_debug,
+                "emotion": str(emotion_facts.get("emotion") or ""),
             },
         )
         state = self.store.get_or_create_state(self.config.scope)
@@ -427,6 +528,7 @@ class AuraPersonaGateway:
             },
             "setup": setup_debug,
             "reply_contract": reply_debug,
+            "emotion": emotion_facts,
             "hermes": {
                 "ok": model_result.ok,
                 "status": model_result.status,
@@ -448,7 +550,12 @@ class AuraPersonaGateway:
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
             voice_turn=voice_turn.to_dict(),
             debug=debug if self.config.include_debug_context else {},
-            evidence={**dict(model_result.evidence or {}), "world_location_key": world_location_key},
+            evidence={
+                **dict(model_result.evidence or {}),
+                "world_location_key": world_location_key,
+                # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
+                "emotion": str(emotion_facts.get("emotion") or ""),
+            },
         )
 
     def run_direct_turn_stream(self, user_text: str, *, metadata: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
@@ -496,6 +603,7 @@ class AuraPersonaGateway:
                 voice_turn=voice_turn,
                 context=context,
                 setup_debug=setup_debug,
+                user_text=user_text,
             )
             yield {"type": "final", "payload": result.to_dict()}
             return
@@ -552,6 +660,7 @@ class AuraPersonaGateway:
                 voice_turn=voice_turn,
                 context=context,
                 setup_debug=setup_debug,
+                user_text=user_text,
             )
             yield {"type": "final", "payload": result.to_dict()}
             return
@@ -593,6 +702,12 @@ class AuraPersonaGateway:
             agent_marker_watch = agent_marker_enabled and not local_preface
             agent_marker_hit = False
             agent_marker_buffer = ""
+            # E2.2：模型第一行的 <emo:X> 情绪标签在这里剥掉，之后的质量护栏、
+            # 压缩、TTS、字幕和历史看到的都只是要说的那句话。
+            emotion_tags = EmotionTagStripper()
+            llm_emotion = ""
+            emotion_event_sent = False
+            emotion_tag_resolved = False
 
             def stream_evidence(extra: dict[str, Any]) -> dict[str, Any]:
                 payload = {
@@ -647,6 +762,28 @@ class AuraPersonaGateway:
                         stream_timing.update(dict(event["timing"]))
                     if raw_delta and not first_raw_delta_ms:
                         first_raw_delta_ms = max(0, int((time.monotonic() - started) * 1000))
+                    # 先剥情绪标签，再让 [后台] 意图标记看到干净文本：标签占第一行，
+                    # 标记探测逻辑（以 "[" 开头）才不会把一个 "<emo:x>[后台]…" 误判成普通回复。
+                    clean_delta = emotion_tags.feed(raw_delta)
+                    if emotion_tags.started and not emotion_tag_resolved:
+                        emotion_tag_resolved = True
+                        # 非法值也带着走：resolve_turn_emotion 归一化失败时会走规则兜底，
+                        # reason 里还能看到模型原本写了什么，方便回归时定位。
+                        llm_emotion = emotion_tags.emotion or emotion_tags.raw_emotion
+                        if emotion_tags.emotion and not emotion_event_sent:
+                            emotion_event_sent = True
+                            # 提前告诉网关这轮的情绪，TTS 首段合成时就能带上语气。
+                            # 先叠上状态调制和惯性（只读不写），否则设备脸和语气会比
+                            # 回合结束时记账的情绪“跳得更高”。
+                            early = resolve_turn_emotion(
+                                llm_emotion=llm_emotion,
+                                user_text=user_text,
+                                state=self.store.get_or_create_state(self.config.scope),
+                            )
+                            yield {"type": "emotion", "emotion": str(early.get("emotion") or llm_emotion), "source": "llm"}
+                    if not clean_delta:
+                        continue
+                    raw_delta = clean_delta
                     if agent_marker_hit:
                         # 已命中 [后台]：继续吃完任务描述，不产生任何可播文本。
                         agent_marker_buffer += raw_delta
@@ -902,6 +1039,8 @@ class AuraPersonaGateway:
                     continue
                 if event.get("type") == "final":
                     final_event = event
+            # 标签只剩半截（或整段只有前导空白）时不会有可播文本，这里把缓冲收干净。
+            emotion_tags.finish()
             if agent_marker_hit:
                 # 快模型判定这轮它答不准 → 转后台 agent，当场只播一句确认。
                 task_text = agent_marker_buffer.lstrip().replace("【", "[").replace("】", "]")
@@ -936,6 +1075,7 @@ class AuraPersonaGateway:
                     voice_turn=deferred_voice_turn,
                     context=context,
                     setup_debug=setup_debug,
+                    user_text=user_text,
                 )
                 yield {"type": "final", "payload": result.to_dict()}
                 return
@@ -1089,6 +1229,22 @@ class AuraPersonaGateway:
         reply_debug = reply.to_debug(raw_response=model_result.response)
         if quality_guard:
             reply_debug["quality_guard"] = quality_guard
+        # E2/E3：LLM 自评标签优先，非法/缺失走规则兜底，再叠加状态调制和惯性；
+        # 心情增量走 W1 账本，情绪状态写进 metadata 供下一轮 prompt 使用。
+        emotion_facts: dict[str, Any] = {}
+        if not speculative:
+            state = self.store.get_or_create_state(self.config.scope)
+            emotion_facts, state = _record_emotion_turn(
+                store=self.store,
+                scope=self.config.scope,
+                state=state,
+                request_id=request_id,
+                user_text=user_text,
+                reply_text=response,
+                llm_emotion=llm_emotion,
+            )
+            self.store.save_state(self.config.scope, state)
+            reply_debug["emotion"] = emotion_facts
         if not speculative:
             self.store.save_im_message(
                 self.config.scope,
@@ -1104,6 +1260,7 @@ class AuraPersonaGateway:
                     "reply_contract": reply_debug,
                     "streamed": True,
                     "local_preface": bool(local_preface),
+                    "emotion": str(emotion_facts.get("emotion") or ""),
                 },
             )
             state = self.store.get_or_create_state(self.config.scope)
@@ -1146,6 +1303,8 @@ class AuraPersonaGateway:
                 **local_preface_debug,
                 "chars": len(local_preface),
             }
+        if emotion_facts:
+            debug["emotion"] = emotion_facts
         if self.config.debug_enabled and not speculative:
             self.store.record_debug_event(
                 self.config.scope,
@@ -1169,6 +1328,8 @@ class AuraPersonaGateway:
                 "persona_turn_latency_ms": persona_turn_latency_ms,
                 "local_preface": bool(local_preface),
                 "speculative": speculative,
+                # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
+                **({"emotion": str(emotion_facts.get("emotion") or "")} if emotion_facts else {}),
                 **({"quality_guard": quality_guard} if quality_guard else {}),
             },
         )
@@ -1336,6 +1497,8 @@ class AuraPersonaGateway:
         voice_turn: VoiceTurnResult,
         context: PersonaContext,
         setup_debug: dict[str, Any],
+        user_text: str = "",
+        speculative: bool = False,
     ) -> PersonaTurnResult:
         response = voice_turn.speak_text.strip()
         evidence: dict[str, Any] = {"stop_reason": "local_voice_reply", "model_skipped": True, "local_voice_reply": True}
@@ -1343,6 +1506,22 @@ class AuraPersonaGateway:
         if isinstance(reminder_payload, dict) and reminder_payload:
             # 网关靠 evidence["reminder"] 真正调度到点播报，别弄丢。
             evidence["reminder"] = dict(reminder_payload)
+        # E4：规则回复自带的 emotion 还是旧词表（warm/calm/focused…），
+        # 统一过一遍 normalize_emotion，协议里只出现 E1 值。
+        emotion_facts, state = _record_emotion_turn(
+            store=self.store,
+            scope=self.config.scope,
+            state=self.store.get_or_create_state(self.config.scope),
+            request_id=request_id,
+            user_text=user_text,
+            reply_text=response,
+            llm_emotion=voice_turn.emotion,
+            emotion_source="rule",
+            speculative=speculative,
+        )
+        if not speculative:
+            self.store.save_state(self.config.scope, state)
+        evidence["emotion"] = str(emotion_facts.get("emotion") or "")
         self.store.save_im_message(
             self.config.scope,
             direction="aura",
@@ -1358,18 +1537,20 @@ class AuraPersonaGateway:
                 "streamed": True,
                 "local_preface": False,
                 "evidence": dict(evidence),
+                "emotion": evidence["emotion"],
             },
         )
-        state = self.store.get_or_create_state(self.config.scope)
-        updated_state = apply_agent_reply_delta(state, ok=True)
-        _record_reply_ledger(
-            store=self.store,
-            scope=self.config.scope,
-            state=state,
-            updated=updated_state,
-            ok=True,
-        )
-        self.store.save_state(self.config.scope, updated_state)
+        if not speculative:
+            state = self.store.get_or_create_state(self.config.scope)
+            updated_state = apply_agent_reply_delta(state, ok=True)
+            _record_reply_ledger(
+                store=self.store,
+                scope=self.config.scope,
+                state=state,
+                updated=updated_state,
+                ok=True,
+            )
+            self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,
@@ -1382,6 +1563,7 @@ class AuraPersonaGateway:
                 "tts_provider": self.runtime_config.tts_provider,
             },
             "setup": setup_debug,
+            "emotion": emotion_facts,
             "hermes": {
                 "ok": True,
                 "status": "skipped",
@@ -1476,6 +1658,8 @@ class AuraPersonaGateway:
         voice_turn: VoiceTurnResult,
         context: PersonaContext,
         setup_debug: dict[str, Any],
+        user_text: str = "",
+        speculative: bool = False,
     ) -> PersonaTurnResult:
         task = voice_turn.background_task
         response = voice_turn.speak_text.strip() or self.runtime_config.background_ack_reply
@@ -1483,6 +1667,20 @@ class AuraPersonaGateway:
             response = response or "好，我先处理。"
         task_id = task.task_id if task else f"voice-{uuid.uuid4().hex[:12]}"
         task_payload = task.to_dict() if task else {}
+        # E4：确认句也是规则回复，emotion 统一过 normalize_emotion。
+        emotion_facts, state = _record_emotion_turn(
+            store=self.store,
+            scope=self.config.scope,
+            state=self.store.get_or_create_state(self.config.scope),
+            request_id=request_id,
+            user_text=user_text or (task.source_text if task else ""),
+            reply_text=response,
+            llm_emotion=voice_turn.emotion,
+            emotion_source="rule",
+            speculative=speculative,
+        )
+        if not speculative:
+            self.store.save_state(self.config.scope, state)
         self.store.save_im_message(
             self.config.scope,
             direction="aura",
@@ -1496,6 +1694,7 @@ class AuraPersonaGateway:
                 "voice_turn": voice_turn.to_dict(),
                 "deferred": True,
                 "background_task": task_payload,
+                "emotion": str(emotion_facts.get("emotion") or ""),
             },
             task_id=task_id,
             reply_to_id=user_message_id,
@@ -1512,16 +1711,17 @@ class AuraPersonaGateway:
                 "voice_turn": voice_turn.to_dict(),
             },
         )
-        state = self.store.get_or_create_state(self.config.scope)
-        updated_state = apply_agent_reply_delta(state, ok=True)
-        _record_reply_ledger(
-            store=self.store,
-            scope=self.config.scope,
-            state=state,
-            updated=updated_state,
-            ok=True,
-        )
-        self.store.save_state(self.config.scope, updated_state)
+        if not speculative:
+            state = self.store.get_or_create_state(self.config.scope)
+            updated_state = apply_agent_reply_delta(state, ok=True)
+            _record_reply_ledger(
+                store=self.store,
+                scope=self.config.scope,
+                state=state,
+                updated=updated_state,
+                ok=True,
+            )
+            self.store.save_state(self.config.scope, updated_state)
         debug = {
             "request_id": request_id,
             "context": context.debug,
@@ -1536,6 +1736,7 @@ class AuraPersonaGateway:
                 "aura_model_mode": self.runtime_config.aura_model_mode,
             },
             "setup": setup_debug,
+            "emotion": emotion_facts,
             "hermes": {
                 "ok": True,
                 "status": "queued",
@@ -1543,7 +1744,7 @@ class AuraPersonaGateway:
                 "reason": "background_task",
             },
         }
-        if self.config.debug_enabled:
+        if self.config.debug_enabled and not speculative:
             self.store.record_debug_event(
                 self.config.scope,
                 title="Lily persona background task queued",
@@ -1570,6 +1771,8 @@ class AuraPersonaGateway:
                 "deferred": True,
                 "task_id": task_id,
                 "task_kind": task.task_kind if task else "",
+                # E4：网关从这里取情绪填 dialogue.payload.emotion。
+                "emotion": str(emotion_facts.get("emotion") or ""),
             },
         )
 

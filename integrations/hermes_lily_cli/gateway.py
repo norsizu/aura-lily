@@ -47,10 +47,12 @@ from integrations.hermes_lily_cli.voice_providers import (
     transcribe_qwen3_asr,
     transcribe_tencent,
     transcribe_volcengine,
+    volcengine_emotion_debug,
 )
 
 try:
     from integrations.aura_persona_gateway.config import load_persona_config
+    from integrations.aura_persona_gateway.emotion_engine import EmotionTagStripper, normalize_emotion, strip_emotion_tag
     from integrations.aura_persona_gateway.grounded_intent import classify_grounded_current_intent
     from integrations.aura_persona_gateway.llm import open_pooled_http_request, warm_pooled_http_url
     from integrations.aura_persona_gateway.query_context import resolve_query_context
@@ -68,14 +70,17 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     classify_grounded_current_intent = None
     cached_weather_snapshot = None
     compute_affinity_level = None
+    EmotionTagStripper = None
     LilyPersonaStore = None
     load_aura_runtime_config = None
     load_persona_config = None
+    normalize_emotion = None
     normalize_spoken_reply = None
     open_pooled_http_request = None
     resolve_query_context = None
     refresh_cached_weather_if_needed = None
     refresh_user_weather_if_needed = None
+    strip_emotion_tag = None
     warm_pooled_http_url = None
     build_world_snapshot = None
 
@@ -2515,6 +2520,85 @@ def emotion_to_pose(emotion: str | None) -> str | None:
     return None
 
 
+def _emotion_engine_ready() -> bool:
+    return normalize_emotion is not None and strip_emotion_tag is not None
+
+
+def turn_emotion_value(
+    voice_turn: dict[str, Any] | None,
+    evidence: dict[str, Any] | None = None,
+) -> str:
+    """本回合最终情绪（E1 值）；旧值会被 normalize 掉，拿不到就返回空串。"""
+    raw = ""
+    if isinstance(evidence, dict):
+        raw = str(evidence.get("emotion") or "")
+    if not raw and isinstance(voice_turn, dict):
+        raw = str(voice_turn.get("emotion") or "")
+    if not raw or not _emotion_engine_ready():
+        return ""
+    return normalize_emotion(raw)
+
+
+def dialogue_emotion(emotion: str | None) -> str:
+    """dialogue payload 的 emotion：归一化成 E1 值，没有情绪时给 neutral。
+
+    协议上这个字段永远是 E1 八个值之一，设备端不用处理空串和旧词表。
+    """
+    if not _emotion_engine_ready():
+        return "neutral"
+    return normalize_emotion(emotion) or "neutral"
+
+
+def turn_pose(voice_turn: dict[str, Any] | None, evidence: dict[str, Any] | None = None) -> str | None:
+    """姿势：先用本轮解析出的 E1 情绪映射，映射不到再退回 fastpath 旧值。
+
+    旧值兼容靠这次回退保留——voice_turn 的规则回复还在用 warm/firm 这套词，
+    直接按 E1 归一化会把 firm 的 proud 姿势弄丢。生产里两者同源（evidence 的
+    情绪就是 voice_turn 情绪归一化后的结果），不会真的给出互相矛盾的姿势。
+    """
+    resolved = turn_emotion_value(voice_turn, evidence)
+    return emotion_to_pose(resolved) or voice_turn_pose(voice_turn)
+
+
+def strip_reply_emotion_tag(text: str) -> tuple[str, str]:
+    """兜底剥离：任何发往字幕/TTS 的文本都不允许残留 <emo:> 标签。"""
+    if not _emotion_engine_ready():
+        return str(text or ""), ""
+    return strip_emotion_tag(text)
+
+
+# StepFun stepaudio-2.5/3 TTS 的行内语气（Inline Context）：句首括号里的话只当指令、
+# 不会念出来。instruction 是会话级的、预热会话建好时还不知道情绪，所以走行内。
+STEPFUN_INLINE_EMOTION_MODELS = ("stepaudio-2.5-tts", "stepaudio-3-tts")
+STEPFUN_EMOTION_INLINE = {
+    "happy": "开心，语气轻快",
+    "excited": "兴奋，语速稍快，充满活力",
+    "shy": "害羞，声音轻柔，有点腼腆",
+    "sad": "难过，语气低落，语速放慢",
+    "worried": "担心，语气关切，略带不安",
+    "pouty": "委屈，带点小抱怨",
+    "surprised": "惊讶，语调上扬",
+}
+
+
+def stepfun_emotion_text(runtime_config: Any, text: str, emotion: str) -> str:
+    """StepFun 支持行内语气的模型：在句首加 ``（语气）``；其余情况原样返回。"""
+    value = str(text or "")
+    provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
+    model = str(getattr(runtime_config, "tts_model", "") or "").strip()
+    if provider != "stepfun" or model not in STEPFUN_INLINE_EMOTION_MODELS or not value.strip():
+        return value
+    hint = STEPFUN_EMOTION_INLINE.get(str(emotion or "").strip().lower(), "")
+    return f"（{hint}）{value}" if hint else value
+
+
+def log_tts_emotion(provider: str, emotion: str) -> None:
+    """火山请求体的情绪字段格式还没确认：只在日志里留痕，不随请求发送。"""
+    if str(provider or "").strip().lower() != "volcengine" or not str(emotion or "").strip():
+        return
+    log_gateway("tts_emotion_debug_only", provider="volcengine", **volcengine_emotion_debug(emotion))
+
+
 WORLD_LOCATION_SCENES = {
     "home.living_room": "home.living_room",
     "home.study": "home.study",
@@ -2578,6 +2662,11 @@ async def send_dialogue_and_tts(
     coins_earned: int = 0,
 ) -> None:
     await close_stepfun_tts_warm_session(state)
+    # 兜底：万一上游没剥掉 <emo:X>，也不能让它进字幕和 TTS。
+    response, reply_emotion = strip_reply_emotion_tag(response)
+    # evidence 里是调制+惯性之后的结论，比模型原始标签权威。
+    turn_emotion = turn_emotion_value(voice_turn, bridge_evidence) or reply_emotion
+    log_tts_emotion(str(getattr(runtime_config, "tts_provider", "") or ""), turn_emotion)
     spoken_response = device_spoken_text(response)
     local_audio_id = ""
     if state.supports_local_audio:
@@ -2597,7 +2686,8 @@ async def send_dialogue_and_tts(
             "request_id": request_id,
             "text": spoken_response,
             "segments": dialogue_segments(spoken_response),
-            "pose": voice_turn_pose(voice_turn),
+            "pose": turn_pose(voice_turn, bridge_evidence),
+            "emotion": dialogue_emotion(turn_emotion),
             "scene": dialogue_scene({"evidence": bridge_evidence or {}}),
             "coins_earned": max(0, int(coins_earned or 0)),
             "deferred": bool(deferred),
@@ -2627,6 +2717,8 @@ async def send_dialogue_and_tts(
             stream_id=1,
             is_final=True,
             preface=False,
+            # 没有情绪时不传这个参数，保持老 TTS 实现的调用形状。
+            **({"emotion": turn_emotion} if turn_emotion else {}),
         )
     first_audio_ms = preface.first_audio_ms if preface and preface.ok and preface.first_audio_ms else tts.first_audio_ms
     tts_total_ms = tts.latency_ms + (preface.latency_ms if preface and preface.ok else 0)
@@ -3950,6 +4042,7 @@ async def run_stepfun_step_plan_realtime_turn(websocket: Any, state: TurnState, 
         await send_tts_binary(websocket, state.turn_id, b"", stream_id=1, is_final=True)
         return
     spoken_detail = device_spoken_text(result.detail)
+    spoken_detail, _realtime_emotion = strip_reply_emotion_tag(spoken_detail)
     tts_gap_payload = tts_chunk_timing_payload(result)
     await send_json(websocket, {
         "type": "dialogue",
@@ -3959,6 +4052,7 @@ async def run_stepfun_step_plan_realtime_turn(websocket: Any, state: TurnState, 
             "text": spoken_detail,
             "segments": dialogue_segments(spoken_detail),
             "pose": None,
+            "emotion": dialogue_emotion(_realtime_emotion),
             "scene": "home.living_room",
             "coins_earned": 0,
             "deferred": False,
@@ -4981,7 +5075,7 @@ def _stepfun_asr_text_from_payload(payload: Any) -> str:
     return ""
 
 
-def synthesize_tts(runtime_config: Any, text: str) -> TtsResult:
+def synthesize_tts(runtime_config: Any, text: str, emotion: str = "") -> TtsResult:
     started = time.monotonic()
     if not runtime_config or not getattr(runtime_config, "tts_enabled", False):
         return TtsResult(ok=False, detail="TTS 未启用")
@@ -4996,7 +5090,7 @@ def synthesize_tts(runtime_config: Any, text: str) -> TtsResult:
     audio_parts: list[bytes] = []
     source_rate = _tts_source_sample_rate(runtime_config)
     for index, chunk in enumerate(chunks, start=1):
-        result = _synthesize_tts_chunk(runtime_config, endpoint, chunk, sample_rate=source_rate)
+        result = _synthesize_tts_chunk(runtime_config, endpoint, chunk, sample_rate=source_rate, emotion=emotion)
         if not result.ok:
             return TtsResult(
                 ok=False,
@@ -5029,6 +5123,7 @@ async def synthesize_and_stream_tts(
     allow_stepfun_ws: bool = True,
     dialogue_segment_index: int | None = None,
     dialogue_segment_text: str = "",
+    emotion: str = "",
 ) -> TtsResult:
     started = time.monotonic()
     if not runtime_config or not getattr(runtime_config, "tts_enabled", False):
@@ -5061,6 +5156,7 @@ async def synthesize_and_stream_tts(
             is_final=is_final,
             preface=preface,
             started=started,
+            emotion=emotion,
         )
         if ws_result.ok or not STEPFUN_WS_TTS_FALLBACK_HTTP:
             if not ws_result.ok and not preface:
@@ -5091,6 +5187,7 @@ async def synthesize_and_stream_tts(
                 endpoint,
                 chunk,
                 sample_rate=source_rate,
+                emotion=emotion,
             )
         return index, chunk, result, _elapsed_ms(chunk_started)
 
@@ -5240,7 +5337,14 @@ async def send_tts_failure(websocket: Any, turn_id: int, result: TtsResult, *, s
     await send_tts_binary(websocket, turn_id, b"", stream_id=stream_id, is_final=True)
 
 
-def _synthesize_tts_chunk(runtime_config: Any, endpoint: str, text: str, *, sample_rate: int) -> TtsResult:
+def _synthesize_tts_chunk(
+    runtime_config: Any,
+    endpoint: str,
+    text: str,
+    *,
+    sample_rate: int,
+    emotion: str = "",
+) -> TtsResult:
     provider = str(getattr(runtime_config, "tts_provider", "") or "").strip().lower()
     provider_handlers = {
         "aliyun-nls": synthesize_aliyun_nls,
@@ -5252,11 +5356,11 @@ def _synthesize_tts_chunk(runtime_config: Any, endpoint: str, text: str, *, samp
     timeout = max(1.0, float(getattr(runtime_config, "tts_timeout_seconds", 15) or 15))
     if provider in provider_handlers:
         try:
-            audio = provider_handlers[provider](runtime_config, text, sample_rate=sample_rate, timeout=timeout)
+            audio = provider_handlers[provider](runtime_config, text, sample_rate=sample_rate, timeout=timeout, emotion=emotion)
         except VoiceProviderError as exc:
             return TtsResult(ok=False, detail=str(exc)[:240])
         return TtsResult(ok=bool(audio), audio=audio, detail="" if audio else "empty audio")
-    req = _build_tts_request(runtime_config, endpoint, text, sample_rate=sample_rate)
+    req = _build_tts_request(runtime_config, endpoint, stepfun_emotion_text(runtime_config, text, emotion), sample_rate=sample_rate)
     try:
         with request.urlopen(req, timeout=timeout) as res:
             audio = res.read()
@@ -5449,8 +5553,10 @@ async def synthesize_and_stream_stepfun_ws_tts(
     is_final: bool = True,
     preface: bool = False,
     started: float | None = None,
+    emotion: str = "",
 ) -> TtsResult:
     started = time.monotonic() if started is None else started
+    text = stepfun_emotion_text(runtime_config, text, emotion)
     cooldown_ms = _stepfun_ws_tts_cooldown_remaining_ms()
     if cooldown_ms:
         return TtsResult(
@@ -5675,6 +5781,8 @@ class StepfunWsTtsSession:
         self.error_detail = ""
         self.first_audio_event = asyncio.Event()
         self._slot: asyncio.Semaphore | None = None
+        # 本轮情绪（E1 值）；预热会话建好后才知道，由流式调用方在送字前设置。
+        self.emotion = ""
 
     def is_healthy(self) -> bool:
         if self.error_detail:
@@ -5738,6 +5846,7 @@ class StepfunWsTtsSession:
         if not self.first_text_ms:
             self.first_text_ms = _elapsed_ms(self.started)
         self.text_count += 1
+        clean = stepfun_emotion_text(self.runtime_config, clean, self.emotion)
         await self._step_ws.send(json.dumps(
             {"type": "tts.text.delta", "data": {"session_id": self.session_id, "text": clean}},
             ensure_ascii=False,
@@ -6432,6 +6541,10 @@ async def stream_dialogue_and_tts_from_bridge(
         if stepfun_ws_tts_available(runtime_config)
         else None
     )
+    # E4：情绪标签在服务端 turn.py 里已经剥掉，这里再兜一次底，
+    # 保证任何上游实现漏剥时标签也进不了字幕和 TTS。
+    emotion_tags = EmotionTagStripper() if EmotionTagStripper is not None else None
+    resolved_emotion = ""
 
     async def cleanup_stream_tts_on_cancel() -> None:
         if state.stream_tts_turn_id != stream_turn_id:
@@ -6480,6 +6593,9 @@ async def stream_dialogue_and_tts_from_bridge(
 
     async def synthesize_stream_segment(text: str) -> TtsResult:
         async with tts_semaphore:
+            # 没有情绪时保持两参调用：老 TTS 实现和测试替身只认 (runtime_config, text)。
+            if resolved_emotion:
+                return await asyncio.to_thread(synthesize_tts, runtime_config, text, resolved_emotion)
             return await asyncio.to_thread(synthesize_tts, runtime_config, text)
 
     async def queue_stream_segment(segment: str, *, is_final: bool, source: str = "") -> bool:
@@ -6747,6 +6863,7 @@ async def stream_dialogue_and_tts_from_bridge(
                                     else 0
                                 ),
                             )
+                    stepfun_tts_session.emotion = resolved_emotion
                     await stepfun_tts_session.send_text(item.text)
                     text_sent_ms = _elapsed_ms(bridge_started)
                     if (
@@ -6929,6 +7046,10 @@ async def stream_dialogue_and_tts_from_bridge(
                 delta = str(event.get("text") or "")
                 if not delta:
                     continue
+                if emotion_tags is not None:
+                    delta = emotion_tags.feed(delta)
+                    if not delta:
+                        continue
                 if not first_delta_ms:
                     first_delta_ms = _elapsed_ms(bridge_started)
                     await send_json(websocket, {
@@ -6995,6 +7116,12 @@ async def stream_dialogue_and_tts_from_bridge(
                         continue
                     await queue_stream_segment(segment, is_final=False)
                 continue
+            if event_type == "emotion":
+                # turn.py 在标签解析出来那一刻就推这个事件，赶在第一个 TTS 分段排队之前。
+                event_emotion = str(event.get("emotion") or "")
+                normalized = normalize_emotion(event_emotion) if normalize_emotion else event_emotion
+                resolved_emotion = normalized or resolved_emotion
+                continue
             if event_type == "final":
                 payload = event.get("payload") if isinstance(event.get("payload"), dict) else event
                 final_payload = dict(payload)
@@ -7009,6 +7136,10 @@ async def stream_dialogue_and_tts_from_bridge(
     except asyncio.CancelledError:
         await cleanup_stream_tts_on_cancel()
         raise
+
+    if emotion_tags is not None:
+        # 流末尾还挂在缓冲里的伪标签直接丢掉：它从来不是要念出来的话。
+        emotion_tags.finish()
 
     if not saw_event:
         await tts_queue.put(None)
@@ -7070,6 +7201,7 @@ async def stream_dialogue_and_tts_from_bridge(
         clear_bridge_speculative_adoption(state)
         return True
     response = str((final_payload or {}).get("response") or raw_response).strip()
+    response, response_emotion = strip_reply_emotion_tag(response)
     fallback_response = stream_bridge_fallback_response(transcript)
     queued_response = "".join(queued_tts_texts).strip()
     quality_stop_reason = str(evidence.get("stop_reason") or "").strip()
@@ -7155,6 +7287,10 @@ async def stream_dialogue_and_tts_from_bridge(
         if isinstance((final_payload or {}).get("voice_turn"), dict)
         else None
     )
+    # 事件里先到的情绪只用于让 TTS 尽早带上语气；设备脸以 final evidence 为准
+    # （调制+惯性之后的结论），拿不到再退回事件/兜底剥离出的值。
+    resolved_emotion = turn_emotion_value(voice_turn_payload, evidence) or resolved_emotion or response_emotion
+    log_tts_emotion(str(getattr(runtime_config, "tts_provider", "") or ""), resolved_emotion)
     quality_trace = voice_quality_trace_payload(
         transcript=transcript,
         response=spoken_response,
@@ -7172,7 +7308,8 @@ async def stream_dialogue_and_tts_from_bridge(
             "request_id": request_id,
             "text": spoken_response,
             "segments": dialogue_segments_from_parts(queued_tts_texts) or dialogue_segments(spoken_response),
-            "pose": voice_turn_pose(voice_turn_payload),
+            "pose": turn_pose(voice_turn_payload, evidence),
+            "emotion": dialogue_emotion(resolved_emotion),
             "scene": dialogue_scene(final_payload),
             "coins_earned": 0,
             "deferred": bool(evidence.get("deferred")),

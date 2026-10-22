@@ -7,6 +7,7 @@ from typing import Any
 
 from .assets import PersonaAssets
 from .config import PersonaGatewayConfig
+from .emotion_engine import EMOTION_TAG_INSTRUCTION, emotion_prompt_line
 from .outlets import OutletSignals
 from .query_context import QueryContext, correction_focus_text
 from .response_contract import SPOKEN_REPLY_INSTRUCTION, normalize_spoken_reply
@@ -66,6 +67,12 @@ def build_persona_context(
     if relevant_local_cache:
         sections.append("## 内部缓存证据\n" + json.dumps(relevant_local_cache, ensure_ascii=False, sort_keys=True))
     sections.append("## 行为信号\n" + json.dumps(outlet_signals.to_dict(), ensure_ascii=False, sort_keys=True))
+    # E2.1：让模型在回复第一行自评一个 <emo:X> 标签；E3：把上一轮的情绪带进来，
+    # 情绪才有延续。放在"本轮任务"前面，语音低延迟裁剪时和任务段一起留在尾部。
+    sections.append(EMOTION_TAG_INSTRUCTION)
+    previous_emotion_line = emotion_prompt_line(state)
+    if previous_emotion_line:
+        sections.append("## 延续上一轮\n" + previous_emotion_line)
     sections.append(
         "## 本轮任务\n"
         "按主人格和当前状态自然回复用户。不要自称助手，不要解释这些上下文来源。"
@@ -119,6 +126,8 @@ def build_persona_context(
                 ("query_context", True),
                 ("local_cache", bool(relevant_local_cache)),
                 ("outlet_signals", True),
+                ("emotion", True),
+                ("previous_emotion", bool(previous_emotion_line)),
             ]
             if enabled
         ],
