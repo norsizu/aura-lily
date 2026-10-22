@@ -8,6 +8,15 @@ config AURA_WS_URI_DEFAULT
         through the provisioning page. Leave empty for a self-configured
         public build and set the address during provisioning.
 
+config AURA_WS_URI_PINNED
+    bool "Always use the default WebSocket server URI"
+    default n
+    depends on AURA_WS_URI_DEFAULT != ""
+    help
+        Skip mDNS discovery, the provisioned server URL and the last-good
+        cache, and always connect to AURA_WS_URI_DEFAULT. Intended for
+        dedicated demo builds bound to one hosted gateway.
+
 config AURA_OTA_MANIFEST_URL
     string "OTA application manifest URL"
     default ""

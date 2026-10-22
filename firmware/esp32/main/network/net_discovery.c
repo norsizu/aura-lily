@@ -151,6 +151,14 @@ esp_err_t net_discovery_resolve_ws_uri(char *uri, size_t uri_len)
         return ESP_ERR_INVALID_ARG;
     }
 
+#if CONFIG_AURA_WS_URI_PINNED
+    /* 演示专用构建：固定连编译期地址，不让局域网发现或旧缓存把设备带走。 */
+    strncpy(uri, WS_URI_DEFAULT, uri_len - 1);
+    uri[uri_len - 1] = '\0';
+    ESP_LOGI(TAG, "WS URI pinned at build time: %s", uri);
+    return ESP_OK;
+#endif
+
     /* 首查紧跟在拿到 IP 之后，组播可能尚未就绪，失败时重试一次。 */
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (net_discovery_mdns_query(uri, uri_len, AURA_MDNS_TIMEOUT_MS) == ESP_OK) {
