@@ -428,3 +428,16 @@ def test_resolve_applies_inertia_and_records_it():
 def test_resolve_cause_carries_the_clipped_user_text():
     facts = resolve_turn_emotion(llm_emotion="happy", user_text="  升职啦  ", reply_text="", state={})
     assert facts["cause"] == "用户：升职啦"
+
+
+def test_narrative_find_is_not_a_lookup_request():
+    """倾诉里的“找了/没找到”不能被当成查资料排后台（真机误判回归）。"""
+    from integrations.aura_persona_gateway.voice_turn import _agent_lookup_hit
+
+    assert not _agent_lookup_hit("我的猫走丢了，找了一下午都没找到")
+    assert not _agent_lookup_hit("钥匙找不到了，好烦")
+    assert not _agent_lookup_hit("今天想找你聊聊")
+    assert _agent_lookup_hit("帮我查一下北京明天的天气")
+    assert _agent_lookup_hit("帮我找一下附近的宠物医院")
+    assert _agent_lookup_hit("我找了半天，你帮我搜搜附近的宠物医院")
+    assert _agent_lookup_hit("帮我找回密码")

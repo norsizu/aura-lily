@@ -65,6 +65,13 @@ REFUSE_RE = re.compile(r"(删掉|删除|清空|格式化|rm\s+-rf|系统文件|�
 # 意图判断的场景）。语音流式路径上由前端快模型自己输出 [后台] 标记做意图判断，
 # 见 llm.AGENT_TASK_STREAM_INSTRUCTION 与 turn.run_direct_turn_stream。
 AGENT_LOOKUP_RE = re.compile(r"(查|搜|找|看一下|确认|比特币|股票|价格|新闻|资料|官网|天气预报)")
+# 叙述里的“找/查/搜”不是请求：“找了一下午都没找到”是倾诉，不能被当成查资料排后台。
+AGENT_LOOKUP_NARRATIVE_RE = re.compile(r"(找|查|搜)(了|过|遍|不到|不着|到了)|没(找|查|搜)|想找你")
+
+
+def _agent_lookup_hit(text: str) -> bool:
+    """查资料意图：先去掉叙述性的“找了/没找到”，剩下的才算请求。"""
+    return bool(AGENT_LOOKUP_RE.search(AGENT_LOOKUP_NARRATIVE_RE.sub("", str(text or ""))))
 # 只有会产出“实体交付物”的重创作才排后台；写句诗、一句话总结这类轻创作直接让模型当场答。
 AGENT_CREATE_RE = re.compile(r"(做一份|写一份|文档|报告|代码|脚本|表格|PPT|海报|简历|画.{0,4}图)")
 # ── 本地能力边界判断 ─────────────────────────────────────────────
@@ -314,8 +321,8 @@ def execute_voice_turn(
             mode=runtime.fast_reply_mode,
             extra_debug={"supportive_chat": supportive_debug},
         )
-    if runtime.ack_and_enqueue_enabled and (AGENT_LOOKUP_RE.search(raw) or AGENT_CREATE_RE.search(raw)):
-        kind = "agent_lookup" if AGENT_LOOKUP_RE.search(raw) else "agent_create"
+    if runtime.ack_and_enqueue_enabled and (_agent_lookup_hit(raw) or AGENT_CREATE_RE.search(raw)):
+        kind = "agent_lookup" if _agent_lookup_hit(raw) else "agent_create"
         task = BackgroundTask(task_id=_task_id(raw, kind), task_kind=kind, source_text=raw)
         speak = runtime.background_ack_reply if runtime.fast_reply_enabled else ""
         return _result(
@@ -666,7 +673,7 @@ def _supportive_chat_reply(text: str) -> tuple[str, dict[str, Any]]:
     clean = PUNCT_RE.sub("", str(text or "")).lower()
     if not SUPPORTIVE_RE.search(clean):
         return "", {}
-    if AGENT_LOOKUP_RE.search(text) or AGENT_CREATE_RE.search(text):
+    if _agent_lookup_hit(text) or AGENT_CREATE_RE.search(text):
         return "", {"skipped": "agent_intent"}
     if any(token in clean for token in ("为什么", "怎么", "如何", "多少", "几点", "天气", "在哪", "干嘛")):
         return "", {"skipped": "question_intent"}
@@ -716,7 +723,7 @@ def _casual_chat_preface(text: str) -> tuple[str, dict[str, Any]]:
         return "", {}
     if SUPPORTIVE_RE.search(clean):
         return "", {"skipped": "supportive_chat"}
-    if AGENT_LOOKUP_RE.search(text) or AGENT_CREATE_RE.search(text):
+    if _agent_lookup_hit(text) or AGENT_CREATE_RE.search(text):
         return "", {"skipped": "agent_intent"}
     if any(token in clean for token in ("为什么", "怎么", "如何", "多少", "几点", "天气", "在哪", "干嘛", "帮我", "给我")):
         return "", {"skipped": "question_or_task"}
@@ -755,7 +762,7 @@ def _status_review_entry_reply(text: str) -> tuple[str, dict[str, Any]]:
     clean = PUNCT_RE.sub("", str(text or "")).lower()
     if not clean or not STATUS_REVIEW_RE.search(clean):
         return "", {}
-    if AGENT_LOOKUP_RE.search(text) or AGENT_CREATE_RE.search(text):
+    if _agent_lookup_hit(text) or AGENT_CREATE_RE.search(text):
         return "", {"skipped": "agent_intent"}
     if any(token in clean for token in ("为什么", "怎么", "如何", "多少", "几点", "天气", "在哪", "干嘛", "帮我", "给我")):
         return "", {"skipped": "question_or_task"}
