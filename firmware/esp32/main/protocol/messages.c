@@ -49,3 +49,24 @@ const char *msg_index_to_pose(int index)
     if (index >= 0 && index < 9) return POSE_NAMES[index];
     return "idle_a";
 }
+
+/* E1 情绪集合：顺序即 emotion_115.bin 的资源索引（见 ui/panels.c）。 */
+static const char *E1_EMOTION_NAMES[] = {
+    "neutral", "happy", "excited", "shy",
+    "sad", "worried", "pouty", "surprised",
+};
+
+const char *msg_emotion_name(int index)
+{
+    if (index < 0 || index >= E1_EMOTION_COUNT) return "neutral";
+    return E1_EMOTION_NAMES[index];
+}
+
+int msg_emotion_to_index(const char *emotion)
+{
+    if (!emotion || emotion[0] == '\0') return -1;
+    for (int i = 0; i < E1_EMOTION_COUNT; i++) {
+        if (strcmp(emotion, E1_EMOTION_NAMES[i]) == 0) return i;
+    }
+    return -1;
+}

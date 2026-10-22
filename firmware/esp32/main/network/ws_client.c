@@ -113,6 +113,11 @@ static uint32_t s_pending_turn_id = 0;
 static int     s_pending_pose = -1;
 static int     s_pending_scene = -1;
 static int     s_pending_coins = 0;
+/* 情绪跟着这轮字幕一起缓冲：上一轮的情绪不能盖在新字幕上。
+ * s_pending_emotion_valid=false 表示该轮 dialogue 没带 emotion 字段
+ * （旧服务端），显示时保留设备当前的情绪。 */
+static char    s_pending_emotion[16] = {0};
+static bool    s_pending_emotion_valid = false;
 static volatile bool s_dessert_purchase_pending = false;
 static bool    s_pending_continue_listening = false;
 static bool    s_active_continue_listening_after_tts = false;
@@ -938,6 +943,8 @@ static void ws_clear_pending_dialogue(void)
     s_pending_pose = -1;
     s_pending_scene = -1;
     s_pending_coins = 0;
+    s_pending_emotion[0] = '\0';
+    s_pending_emotion_valid = false;
     s_pending_continue_listening = false;
 }
 
@@ -1163,7 +1170,8 @@ static bool ws_turn_matches(uint32_t incoming_turn_id)
 }
 
 static void ws_buffer_pending_dialogue(const char *text, int pose, int scene, int coins,
-                                       uint32_t turn_id, bool continue_listening)
+                                       uint32_t turn_id, bool continue_listening,
+                                       const char *emotion)
 {
     if (text) {
         ws_sanitize_dialogue_text(text, s_pending_text, sizeof(s_pending_text));
@@ -1175,6 +1183,15 @@ static void ws_buffer_pending_dialogue(const char *text, int pose, int scene, in
     s_pending_scene = scene;
     s_pending_coins = coins;
     s_pending_continue_listening = continue_listening;
+    if (emotion) {
+        strncpy(s_pending_emotion, emotion, sizeof(s_pending_emotion) - 1);
+        s_pending_emotion[sizeof(s_pending_emotion) - 1] = '\0';
+        s_pending_emotion_valid = true;
+    } else {
+        /* 字段缺失：显示时不动当前情绪，兼容旧服务端 */
+        s_pending_emotion[0] = '\0';
+        s_pending_emotion_valid = false;
+    }
     s_pending_dialogue = true;
     s_dialogue_recv_ms = esp_timer_get_time() / 1000;
 }
@@ -1319,6 +1336,13 @@ static void ws_apply_pending_dialogue(void)
         aura_ui_set_dialogue(s_pending_text, REPLY_DIALOGUE_TTL_TICKS);
     }
     s_active_continue_listening_after_tts = s_pending_continue_listening;
+    /* 情绪和这轮字幕一起生效（不是收到 dialogue 的那一刻） */
+    if (s_pending_emotion_valid) {
+        strncpy(g_state.current_emotion, s_pending_emotion,
+                sizeof(g_state.current_emotion) - 1);
+        g_state.current_emotion[sizeof(g_state.current_emotion) - 1] = '\0';
+        ESP_LOGI(TAG, "Dialogue emotion: %s", g_state.current_emotion);
+    }
     if (s_pending_pose >= 0)
         g_state.current_pose = s_pending_pose;
     if (s_pending_scene >= 0)
@@ -2641,7 +2665,7 @@ static void handle_server_message(const char *json_str, int len)
                 char tmp[512];
                 memcpy(tmp, json_str, copy_len);
                 tmp[copy_len] = '\0';
-                ws_buffer_pending_dialogue(tmp, -1, -1, 0, s_turn_seq, false);
+                ws_buffer_pending_dialogue(tmp, -1, -1, 0, s_turn_seq, false, NULL);
             }
             ws_set_agent_progress(82, text_has_non_ascii(json_str) ? "正在生成语音" : "reply ready");
         }
@@ -2667,7 +2691,7 @@ static void handle_server_message(const char *json_str, int len)
             if (sender && cJSON_IsString(sender) &&
                 strcmp(sender->valuestring, "AI") == 0 &&
                 fsm_get_state() == AURA_STATE_PROCESSING) {
-                ws_buffer_pending_dialogue(text->valuestring, -1, -1, 0, s_turn_seq, false);
+                ws_buffer_pending_dialogue(text->valuestring, -1, -1, 0, s_turn_seq, false, NULL);
                 ws_set_agent_progress(82, "正在生成语音");
             } else if (fsm_get_state() != AURA_STATE_LISTENING) {
                 aura_ui_set_dialogue(text->valuestring, REPLY_DIALOGUE_TTL_TICKS);
@@ -3023,6 +3047,7 @@ static void handle_server_message(const char *json_str, int len)
             const cJSON *continue_item = cJSON_GetObjectItem(payload, "continue_listening");
             const cJSON *deferred_item = cJSON_GetObjectItem(payload, "deferred");
             const cJSON *local_audio_item = cJSON_GetObjectItem(payload, "local_audio_id");
+            const cJSON *emotion_item = cJSON_GetObjectItem(payload, "emotion");
             bool was_processing = (fsm_get_state() == AURA_STATE_PROCESSING);
             int pose_idx = -1;
             int scene_idx = -1;
@@ -3030,6 +3055,11 @@ static void handle_server_message(const char *json_str, int len)
             uint32_t turn_id = ws_message_turn_id(payload);
             bool continue_listening = continue_item && cJSON_IsBool(continue_item) && cJSON_IsTrue(continue_item);
             bool deferred_reply = deferred_item && cJSON_IsBool(deferred_item) && cJSON_IsTrue(deferred_item);
+            /* 字段缺失→NULL（保留当前情绪）；非法值→neutral */
+            const char *emotion_name = NULL;
+            if (emotion_item && cJSON_IsString(emotion_item)) {
+                emotion_name = msg_emotion_name(msg_emotion_to_index(emotion_item->valuestring));
+            }
 
             if (!ws_turn_matches(turn_id)) {
                 ESP_LOGW(TAG, "Ignoring dialogue from stale turn %u (current=%u)",
@@ -3046,9 +3076,9 @@ static void handle_server_message(const char *json_str, int len)
                 coins_earned = coins->valueint;
 
             if (text && cJSON_IsString(text))
-                ws_buffer_pending_dialogue(text->valuestring, pose_idx, scene_idx, coins_earned, turn_id, continue_listening);
+                ws_buffer_pending_dialogue(text->valuestring, pose_idx, scene_idx, coins_earned, turn_id, continue_listening, emotion_name);
             else
-                ws_buffer_pending_dialogue("", pose_idx, scene_idx, coins_earned, turn_id, continue_listening);
+                ws_buffer_pending_dialogue("", pose_idx, scene_idx, coins_earned, turn_id, continue_listening, emotion_name);
             ws_load_pending_dialogue_segments(payload);
             bool local_audio_started = false;
             if (local_audio_item && cJSON_IsString(local_audio_item)) {

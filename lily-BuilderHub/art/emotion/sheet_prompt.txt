@@ -1,0 +1,7 @@
+Character expression sheet for a tiny 1-bit monochrome e-paper display. Same girl as the reference image: black ponytail tied with a white bow, bangs, big round dark eyes, simple chibi anime style, bold clean black ink lines on pure white background, no gray shading, no screentone, no text, no labels.
+
+Layout: a strict 3x3 grid of equal square cells on a pure white canvas, thin black border around each cell. In every cell the SAME head-and-shoulders bust, same framing, same size, face centered, facing the viewer, only the facial expression changes (eyes, eyebrows, mouth, small cheek blush marks drawn as short diagonal lines). Keep expressions very readable even when shrunk to 52x52 pixels: exaggerate eye and mouth shapes.
+
+Row 1: (1) neutral calm, small gentle closed-mouth smile; (2) happy, eyes closed upward arcs, open smiling mouth; (3) excited, sparkling star eyes, wide open grin, tiny sparkle marks around head.
+Row 2: (4) shy, eyes looking aside, blush lines on both cheeks, small wavy mouth; (5) sad, eyebrows tilted up in the middle, teary eyes with one tear drop, small downturned mouth; (6) worried, eyebrows knitted, eyes looking up, small sweat drop, tight wavy mouth.
+Row 3: (7) pouty, puffed cheeks, eyebrows angled down, pouting lips, small anger mark; (8) surprised, wide round eyes, small round open "o" mouth, raised eyebrows; (9) leave this cell completely empty white.

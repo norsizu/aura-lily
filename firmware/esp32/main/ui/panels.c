@@ -5,6 +5,7 @@
 #include "panels.h"
 #include "font.h"
 #include "aura_config.h"
+#include "protocol/messages.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <string.h>
@@ -114,10 +115,75 @@ static void load_emoji(void)
     ESP_LOGI(TAG, "Emoji sprites loaded: %d × %dx%d", EMOJI_COUNT, EMOJI_SIZE, EMOJI_SIZE);
 }
 
-/* Map emotion string → index (0-8), default 0 (neutral) */
+/* ── Emotion face portraits (8 E1 emotions × 115×115 grayscale, optional) ──
+ * emotion_115.bin 严格按 E1 顺序排列（见 protocol/messages.h 的 E1_EMOTION_NAMES），
+ * 由 tools/build_emotion_faces.py 生成。资源缺失或长度不对就整体放弃，
+ * 由 draw_face 回落到 emoji_48 / 服装脸。 */
+#define EMOTION_FACE_SIZE 115
+#define EMOTION_FACE_COUNT 8
+
+static uint8_t *s_emotion_face_data = NULL;
+static bool s_emotion_face_loaded = false;
+static bool s_emotion_face_tried = false;
+
+static void load_emotion_faces(void)
+{
+    if (s_emotion_face_loaded || s_emotion_face_tried) return;
+    s_emotion_face_tried = true;
+    FILE *f = fopen("/spiffs/emotion_115.bin", "rb");
+    if (!f) { ESP_LOGW(TAG, "emotion_115.bin not found, using fallback"); return; }
+    size_t total = EMOTION_FACE_COUNT * EMOTION_FACE_SIZE * EMOTION_FACE_SIZE;
+    s_emotion_face_data = heap_caps_malloc(total, MALLOC_CAP_SPIRAM);
+    if (!s_emotion_face_data) { fclose(f); return; }
+    if (fread(s_emotion_face_data, 1, total, f) != total) {
+        fclose(f); heap_caps_free(s_emotion_face_data); s_emotion_face_data = NULL; return;
+    }
+    fclose(f);
+    s_emotion_face_loaded = true;
+    ESP_LOGI(TAG, "Emotion faces loaded: %d × %dx%d",
+             EMOTION_FACE_COUNT, EMOTION_FACE_SIZE, EMOTION_FACE_SIZE);
+}
+
+/* Blit a src_dim×src_dim 8-bit gray sprite into buf at (x,y), scaled to
+ * size×size. Every portrait layer goes through here so they stay identical. */
+static void draw_gray_sprite(uint8_t *buf, int buf_w, int buf_h,
+                             int x, int y, int size, const uint8_t *src, int src_dim)
+{
+    for (int dy = 0; dy < size; dy++) {
+        int src_y = dy * src_dim / size;
+        for (int dx = 0; dx < size; dx++) {
+            int src_x = dx * src_dim / size;
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && px < buf_w && py >= 0 && py < buf_h) {
+                buf[py * buf_w + px] = src[src_y * src_dim + src_x];
+            }
+        }
+    }
+    /* Thin white border around portrait */
+    stroke_rect(buf, buf_w, buf_h, x - 1, y - 1, size + 2, size + 2, UI_WHITE);
+}
+
+/* E1 情绪 → emoji_48.bin 索引。emoji_48 只有 9 格，情绪脸资源缺失时拿它兜底：
+ * neutral→neutral, happy→proud(闭眼笑), excited→excited, shy→shy,
+ * sad→apologetic(低头), worried→thinking, pouty→assertive, surprised→surprised。 */
+static const int E1_TO_EMOJI[E1_EMOTION_COUNT] = {
+    0,  /* neutral     → neutral    */
+    1,  /* happy       → proud      */
+    7,  /* excited     → excited    */
+    6,  /* shy         → shy        */
+    4,  /* sad         → apologetic */
+    2,  /* worried     → thinking   */
+    5,  /* pouty       → assertive  */
+    3,  /* surprised   → surprised  */
+};
+
+/* Map emotion string → index (0-8), default 0 (neutral).
+ * E1 值优先（与 emotion_115.bin 同一套词表），旧词表继续兼容。 */
 static int emotion_to_index(const char *emotion)
 {
     if (!emotion || emotion[0] == '\0') return 0;
+    int e1 = msg_emotion_to_index(emotion);
+    if (e1 >= 0) return E1_TO_EMOJI[e1];
     static const char *names[] = {
         "neutral", "proud", "thinking",
         "surprised", "apologetic", "assertive",
@@ -153,45 +219,42 @@ static void draw_emoji(uint8_t *buf, int buf_w, int buf_h,
 
     emotion_idx = clamp_i(emotion_idx, 0, EMOJI_COUNT - 1);
     const uint8_t *src = s_emoji_data + emotion_idx * EMOJI_SIZE * EMOJI_SIZE;
-
-    /* Draw with scaling if size != EMOJI_SIZE */
-    for (int dy = 0; dy < size; dy++) {
-        int src_y = dy * EMOJI_SIZE / size;
-        for (int dx = 0; dx < size; dx++) {
-            int src_x = dx * EMOJI_SIZE / size;
-            int px = x + dx, py = y + dy;
-            if (px >= 0 && px < buf_w && py >= 0 && py < buf_h) {
-                buf[py * buf_w + px] = src[src_y * EMOJI_SIZE + src_x];
-            }
-        }
-    }
-    /* Thin white border around portrait */
-    stroke_rect(buf, buf_w, buf_h, x - 1, y - 1, size + 2, size + 2, UI_WHITE);
+    draw_gray_sprite(buf, buf_w, buf_h, x, y, size, src, EMOJI_SIZE);
 }
 
-/* Draw outfit face portrait at (x,y) scaled to size×size; falls back to
- * the emotion emoji when the face sheet is missing. */
+/* Draw the dialogue portrait at (x,y) scaled to size×size.
+ *
+ * Priority (DESIGN.md E4):
+ *   1. current_emotion 是 E1 值且 emotion_115.bin 已加载 → 画情绪脸
+ *      （neutral 也画情绪脸的 neutral，让资源表保持权威）
+ *   2. 否则只要不是 neutral / 空 → 用 emoji_48 兜底
+ *   3. 否则（neutral / 空）→ 服装脸，行为不变
+ */
 static void draw_face(uint8_t *buf, int buf_w, int buf_h,
-                      int x, int y, int size, int outfit_idx, int emotion_idx)
+                      int x, int y, int size, int outfit_idx, const char *emotion)
 {
+    load_emotion_faces();
+    if (s_emotion_face_loaded && s_emotion_face_data) {
+        int e1 = msg_emotion_to_index(emotion);
+        if (e1 >= 0) {
+            const uint8_t *src = s_emotion_face_data +
+                                 (size_t)e1 * EMOTION_FACE_SIZE * EMOTION_FACE_SIZE;
+            draw_gray_sprite(buf, buf_w, buf_h, x, y, size, src, EMOTION_FACE_SIZE);
+            return;
+        }
+    }
+    if (emotion && emotion[0] != '\0' && strcmp(emotion, "neutral") != 0) {
+        draw_emoji(buf, buf_w, buf_h, x, y, size, emotion_to_index(emotion));
+        return;
+    }
     load_face();
     if (!s_face_loaded || !s_face_data) {
-        draw_emoji(buf, buf_w, buf_h, x, y, size, emotion_idx);
+        draw_emoji(buf, buf_w, buf_h, x, y, size, emotion_to_index(emotion));
         return;
     }
     outfit_idx = clamp_i(outfit_idx, 0, FACE_COUNT - 1);
     const uint8_t *src = s_face_data + (size_t)outfit_idx * FACE_SIZE * FACE_SIZE;
-    for (int dy = 0; dy < size; dy++) {
-        int src_y = dy * FACE_SIZE / size;
-        for (int dx = 0; dx < size; dx++) {
-            int src_x = dx * FACE_SIZE / size;
-            int px = x + dx, py = y + dy;
-            if (px >= 0 && px < buf_w && py >= 0 && py < buf_h) {
-                buf[py * buf_w + px] = src[src_y * FACE_SIZE + src_x];
-            }
-        }
-    }
-    stroke_rect(buf, buf_w, buf_h, x - 1, y - 1, size + 2, size + 2, UI_WHITE);
+    draw_gray_sprite(buf, buf_w, buf_h, x, y, size, src, FACE_SIZE);
 }
 
 static int clamp_i(int value, int lo, int hi)
@@ -1142,13 +1205,12 @@ void panels_draw_dialogue(uint8_t *graybuf, int width, int height,
     fill_rect(graybuf, width, height, x + pw - r + 1, y + ph - 2, r - 3, 1, UI_WHITE);
     fill_rect(graybuf, width, height, x + pw - 2, y + ph - r + 1, 1, r - 3, UI_WHITE);
 
-    /* ── Face portrait (bottom-right corner, follows current outfit) ── */
+    /* ── Face portrait (bottom-right corner, follows current outfit / emotion) ── */
     const int emoji_sz = 52;  /* rendered size */
     int emoji_x = x + pw - emoji_sz - 10;
     int emoji_y = y + (ph - emoji_sz) / 2;
-    int emo_idx = emotion_to_index(state->current_emotion);
     draw_face(graybuf, width, height, emoji_x, emoji_y, emoji_sz,
-              state->current_outfit, emo_idx);
+              state->current_outfit, state->current_emotion);
 
     /* ── Text area (white text on dark bg, left of portrait) ── */
     int txt_x = x + 14;

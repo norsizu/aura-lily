@@ -8,6 +8,9 @@
 
 static portMUX_TYPE s_ui_state_mux = portMUX_INITIALIZER_UNLOCKED;
 #define INFO_BOARD_IDLE_DELAY_MS (5LL * 60LL * 1000LL)
+/* E4：待机/睡眠超过 10 分钟没有新对话时，情绪回到平静（不新开定时器，
+ * 直接搭在 aura_ui_display_tick 已有的空闲计时上）。 */
+#define EMOTION_IDLE_CALM_MS (10LL * 60LL * 1000LL)
 
 static void copy_text(char *dst, size_t dst_size, const char *src)
 {
@@ -309,6 +312,14 @@ bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snap
             g_state.info_board_visible = true;
             g_state.dirty = true;
             board_became_visible = true;
+        }
+        /* 情绪只保持到下一轮对话；待机 10 分钟没人说话就回到平静。
+         * 这里不改 dirty — 屏幕上没有任何可见变化（头像这会儿也没在画），
+         * g_state 里的新值会随下一次脏帧一起进 snapshot。 */
+        if (g_state.current_emotion[0] != '\0' &&
+            strcmp(g_state.current_emotion, "neutral") != 0 &&
+            now_ms - g_state.idle_since_ms >= EMOTION_IDLE_CALM_MS) {
+            copy_text(g_state.current_emotion, sizeof(g_state.current_emotion), "neutral");
         }
     }
 
