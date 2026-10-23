@@ -37,6 +37,7 @@ def build_persona_context(
     local_cache: dict[str, Any] | None = None,
     world_snapshot: dict[str, Any] | None = None,
     compact_voice: bool = False,
+    self_why_section: str = "",
 ) -> PersonaContext:
     state_summary = state_context_summary(state)
     world_enabled = bool(world_snapshot and world_snapshot.get("enabled"))
@@ -73,6 +74,10 @@ def build_persona_context(
     previous_emotion_line = emotion_prompt_line(state)
     if previous_emotion_line:
         sections.append("## 延续上一轮\n" + previous_emotion_line)
+    # X2：只有这轮在问"你为什么这样"才加，平时不加——加多了模型会养成
+    # 主动汇报账本的习惯。放在尾部，语音裁剪时也留得住。
+    if self_why_section and self_why_section.strip():
+        sections.append(self_why_section.strip())
     sections.append(
         "## 本轮任务\n"
         "按主人格和当前状态自然回复用户。不要自称助手，不要解释这些上下文来源。"
@@ -128,6 +133,7 @@ def build_persona_context(
                 ("outlet_signals", True),
                 ("emotion", True),
                 ("previous_emotion", bool(previous_emotion_line)),
+                ("self_why", bool(self_why_section.strip())),
             ]
             if enabled
         ],
@@ -141,6 +147,7 @@ def build_persona_context(
         "outlet_signals": outlet_signals.to_dict(),
         "world_snapshot": world_snapshot or {},
         "compact_voice": bool(compact_voice),
+        "self_why_chars": len(self_why_section.strip()),
         "user_text": str(user_text or "").strip(),
         "focused_user_text": focused_user_text if focused_user_text != str(user_text).strip() else "",
         "user_topic_keywords": _topic_keywords_for_voice_quality(user_text),

@@ -26,12 +26,26 @@ from .emotion_engine import (
 from .grounded_intent import classify_grounded_current_intent
 from .llm import AGENT_TASK_MARKER, DirectLlmClient, DirectLlmConfig
 from .outlets import evaluate_lily_outlets
+from .pinned_notes import (
+    PIN_SOURCE_AGENT,
+    PIN_SOURCE_VOICE,
+    agent_note_text,
+    bump_note_signal,
+    clear_pinned_notes,
+    note_command_reply,
+    note_summary_prompt,
+    parse_note_command,
+    pin_note,
+    read_pinned_notes,
+    record_note_ledger,
+)
 from .query_context import correction_focus_text, resolve_query_context
 from .response_contract import (
     FALLBACK_SPOKEN_REPLY,
     normalize_spoken_reply,
 )
 from .runtime import CONFIGURED_VALUE_MARKER, AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
+from .self_why import build_self_why_turn, write_self_why_state
 from .state_rules import apply_agent_reply_delta, apply_time_recovery, apply_user_interaction_delta
 from .store import LilyPersonaStore
 from .voice_turn import (
@@ -45,6 +59,8 @@ from .weather import cached_user_weather_snapshot, refresh_cached_weather_if_nee
 from .world import build_world_snapshot
 from .world_ledger import apply_world_change, record_state_change, state_delta
 
+# X3：后台结果压便签只给快模型 5 秒，压不出来就取结果第一句。
+NOTE_SUMMARY_TIMEOUT_SECONDS = 5.0
 VOICE_STREAM_MAX_TOKENS = 128
 VOICE_STREAM_DETAIL_MAX_TOKENS = 384
 STEPFUN_REASONING_STREAM_MIN_TOKENS = 384
@@ -176,6 +192,8 @@ def _record_emotion_turn(
         cause=resolution.get("cause"),
         intensity=resolution.get("intensity"),
         at=stamp,
+        # X1 大屏要能回答"这一轮情绪怎么定下来的"，评估链跟着一起落库。
+        resolution=resolution,
     )
     mood_delta = emotion_mood_delta(emotion)
     if mood_delta:
@@ -199,6 +217,20 @@ def _record_emotion_turn(
                 "cause": summary.get("cause"),
             }
     return resolution, updated
+
+
+def _self_why_trace_keys(setup_debug: dict[str, Any] | None) -> list[str]:
+    """X2：这一轮"问她为什么"引用了哪些账本 event_key（没命中就是空列表）。
+
+    同时进 evidence 和 debug，网关/大屏都能拿到；X1 用它高亮对应的流水行。
+    """
+    debug = (setup_debug or {}).get("self_why")
+    if not isinstance(debug, dict):
+        return []
+    keys = debug.get("why_trace")
+    if not isinstance(keys, list):
+        return []
+    return [str(key) for key in keys if str(key or "").strip()]
 
 
 def _conversation_language(metadata: dict[str, Any] | None) -> str:
@@ -334,6 +366,22 @@ class AuraPersonaGateway:
             proactive_enabled=self.config.proactive_enabled,
             spend_enabled=self.config.spend_enabled,
         )
+        # X2"问她为什么"：命中时把账本里真实的原因整理成一节塞进 prompt，
+        # 并把引用的 event_key 记进 metadata，X1 大屏靠它高亮对应的流水行。
+        self_why = build_self_why_turn(
+            store=self.store,
+            scope=scope,
+            state=updated_state,
+            user_text=user_text,
+        )
+        if self_why.get("matched") and not speculative:
+            write_self_why_state(
+                updated_state,
+                event_keys=self_why.get("why_trace") or [],
+                question=user_text,
+            )
+            self.store.save_state(scope, updated_state)
+            updated_state = self.store.get_or_create_state(scope)
         context = build_persona_context(
             user_text=user_text,
             config=self.config,
@@ -347,6 +395,7 @@ class AuraPersonaGateway:
             local_cache=local_cache,
             world_snapshot=world_snapshot,
             compact_voice=voice_low_latency,
+            self_why_section=str(self_why.get("prompt") or ""),
         )
         if voice_low_latency:
             base_prompt_chars = len(context.prompt)
@@ -390,6 +439,8 @@ class AuraPersonaGateway:
             "state_before_id": state.get("id"),
             "scope": self.config.scope.as_tuple(),
             "focused_user_text": focused_user_text if focused_user_text != user_text else "",
+            # X2：命中"问她为什么"时带上引用了哪些账本事件，X1 大屏据此高亮。
+            "self_why": dict(self_why.get("debug") or {}),
         }
         return context, voice_turn, debug
 
@@ -553,6 +604,7 @@ class AuraPersonaGateway:
             evidence={
                 **dict(model_result.evidence or {}),
                 "world_location_key": world_location_key,
+                "why_trace": _self_why_trace_keys(setup_debug),
                 # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
                 "emotion": str(emotion_facts.get("emotion") or ""),
             },
@@ -717,6 +769,7 @@ class AuraPersonaGateway:
                     "streamed": True,
                     "persona_context_build_ms": context_build_ms,
                     "world_location_key": world_location_key,
+                    "why_trace": _self_why_trace_keys(setup_debug),
                     "aura_llm_first_raw_delta_ms": first_raw_delta_ms,
                     "aura_llm_first_audible_delta_ms": first_audible_delta_ms,
                     "aura_llm_prompt_chars": len(context.prompt),
@@ -1328,6 +1381,7 @@ class AuraPersonaGateway:
                 "persona_turn_latency_ms": persona_turn_latency_ms,
                 "local_preface": bool(local_preface),
                 "speculative": speculative,
+                "why_trace": _self_why_trace_keys(setup_debug),
                 # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
                 **({"emotion": str(emotion_facts.get("emotion") or "")} if emotion_facts else {}),
                 **({"quality_guard": quality_guard} if quality_guard else {}),
@@ -1378,6 +1432,10 @@ class AuraPersonaGateway:
             "reminder_set",
             "reminder_cancel",
             "reminder_time_unclear",
+            # X3 便签：钉上/清空是确定性动作，本地确认话术即最终回复，
+            # 不进模型（模型会把"贴好了"讲成一段话）。
+            "note_pin",
+            "note_clear",
         }:
             return True
         if decision_path in {"supportive_chat"}:
@@ -1414,8 +1472,15 @@ class AuraPersonaGateway:
         decision_path = str((voice_turn.debug or {}).get("decision_path") or "")
         return decision_path in {"agent_lookup", "agent_create"}
 
-    def _run_aura_model(self, prompt: str, *, metadata: dict[str, Any]) -> HermesLilyResult:
+    def _run_aura_model(
+        self,
+        prompt: str,
+        *,
+        metadata: dict[str, Any],
+        timeout_seconds: float | None = None,
+    ) -> HermesLilyResult:
         mode = self.runtime_config.aura_model_mode.strip()
+        timeout = float(timeout_seconds or self.runtime_config.aura_model_timeout_seconds or 90)
         if mode in {"aura_model", "direct_llm"}:
             return DirectLlmClient(
                 DirectLlmConfig(
@@ -1423,7 +1488,7 @@ class AuraPersonaGateway:
                     model=self.runtime_config.aura_model_model,
                     base_url=self.runtime_config.aura_model_base_url,
                     api_key=self.runtime_config.aura_model_api_key,
-                    timeout_seconds=float(self.runtime_config.aura_model_timeout_seconds or 90),
+                    timeout_seconds=timeout,
                     max_tokens=int(self.runtime_config.aura_model_max_tokens or 96),
                     temperature=float(self.runtime_config.aura_model_temperature or 0.4),
                     reasoning_effort=self.runtime_config.aura_model_reasoning_effort,
@@ -1522,6 +1587,17 @@ class AuraPersonaGateway:
         if not speculative:
             self.store.save_state(self.config.scope, state)
         evidence["emotion"] = str(emotion_facts.get("emotion") or "")
+        evidence["why_trace"] = _self_why_trace_keys(setup_debug)
+        # X3：便签指令的落库放在这次 save_state 之后、下一步 get_or_create_state
+        # 之前——后面那次重读会带上 pinned_notes，不会被互动增量覆盖掉。
+        note_facts = self._apply_note_command(
+            voice_turn=voice_turn,
+            state=state,
+            request_id=request_id,
+            speculative=speculative,
+        )
+        if note_facts:
+            evidence["pinned_note"] = note_facts
         self.store.save_im_message(
             self.config.scope,
             direction="aura",
@@ -1588,6 +1664,137 @@ class AuraPersonaGateway:
             debug=debug if self.config.include_debug_context else {},
             evidence=dict(evidence),
         )
+
+    # ── X3 语音便签板 ────────────────────────────────────────
+
+    def _apply_note_command(
+        self,
+        *,
+        voice_turn: VoiceTurnResult,
+        state: dict[str, Any],
+        request_id: str,
+        speculative: bool = False,
+    ) -> dict[str, Any] | None:
+        """把 voice_turn 认出的便签指令真正落到 state + 账本 + 设备推送信号。
+
+        规则快答只负责"说话"，这里负责"做事"：钉上/清空 metadata.pinned_notes、
+        记一条 source="note" 的账本流水、再拨一下信号文件让网关立刻推
+        status_update。推测回合（speculative）什么都不写。
+        """
+        command = (voice_turn.debug or {}).get("pinned_note")
+        if not isinstance(command, dict) or not command:
+            return None
+        if speculative:
+            return {"action": str(command.get("action") or ""), "text": "", "speculative": True}
+        action = "clear" if str(command.get("action") or "") == "clear" else "pin"
+        now = time.time()
+        if action == "clear":
+            text = ""
+            removed = clear_pinned_notes(state)
+        else:
+            text = str(command.get("text") or "")
+            if not text or pin_note(state, text, source=PIN_SOURCE_VOICE, at=now) is None:
+                return None
+            removed = []
+        ledger = record_note_ledger(
+            self.store,
+            self.config.scope,
+            state,
+            action=action,
+            source=PIN_SOURCE_VOICE,
+            text=text,
+            at=now,
+        )
+        self.store.save_state(self.config.scope, state)
+        # 网关是另一个进程，只能靠这个信号文件知道"便签变了"。
+        bump_note_signal(self.config, at=now)
+        return {
+            "action": action,
+            "text": text,
+            "source": PIN_SOURCE_VOICE,
+            "at": now,
+            "removed": [str(item.get("text") or "") for item in removed],
+            "notes": read_pinned_notes(state),
+            "ledger": ledger or {},
+        }
+
+    def _auto_pin_agent_note(
+        self,
+        *,
+        task: BackgroundTask,
+        result_text: str,
+        state: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """X3 来源 b：后台任务跑完，自动钉一条结论便签。
+
+        只有 agent_lookup 会钉任务结论（"北京明天 小雨 12-18℃"这种）；
+        agent_create 产的是文档/代码，塞不进两行的便签格，只钉"《标题》已完成"。
+        失败不阻断主流程——便签是锦上添花，任务结果本身已经存进消息流。
+        """
+        if not result_text.strip():
+            return None
+        now = time.time()
+        text = agent_note_text(
+            result_text,
+            task_kind=task.task_kind,
+            title=self._agent_note_title(task),
+            summarize=lambda body: self._summarize_note_text(body, task=task),
+        )
+        if not text:
+            return None
+        pinned = pin_note(state, text, source=PIN_SOURCE_AGENT, at=now)
+        if pinned is None:
+            return None
+        ledger = record_note_ledger(
+            self.store,
+            self.config.scope,
+            state,
+            action="pin",
+            source=PIN_SOURCE_AGENT,
+            text=text,
+            at=now,
+        )
+        self.store.save_state(self.config.scope, state)
+        bump_note_signal(self.config, at=now)
+        return {
+            "action": "pin",
+            "text": text,
+            "source": PIN_SOURCE_AGENT,
+            "at": now,
+            "notes": read_pinned_notes(state),
+            "ledger": ledger or {},
+        }
+
+    @staticmethod
+    def _agent_note_title(task: BackgroundTask) -> str:
+        """从任务原话里抠一个标题：《…》优先，其次前 12 个字。"""
+        raw = str(task.source_text or "").strip()
+        match = re.search(r"[《「\"“]([^》」\"”]{1,20})[》」\"”]", raw)
+        if match:
+            return match.group(1).strip()
+        return raw[:12]
+
+    def _summarize_note_text(self, body: str, *, task: BackgroundTask) -> str:
+        """用已有的快模型把后台结果压成一句便签；任何失败都返回空串走兜底。
+
+        便签只有两行，超时压到 5 秒以内——压不出来比播得慢更重要。
+        """
+        if not body.strip():
+            return ""
+        try:
+            result = self._run_aura_model(
+                note_summary_prompt(body, source_text=task.source_text),
+                metadata={
+                    "persona_gateway": True,
+                    "request_note_summary": True,
+                    "background_task": task.to_dict(),
+                },
+                timeout_seconds=NOTE_SUMMARY_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return ""
+        return str(getattr(result, "response", "") or "").strip()
 
     def _finish_silent_voice_turn(
         self,
@@ -1771,6 +1978,7 @@ class AuraPersonaGateway:
                 "deferred": True,
                 "task_id": task_id,
                 "task_kind": task.task_kind if task else "",
+                "why_trace": _self_why_trace_keys(setup_debug),
                 # E4：网关从这里取情绪填 dialogue.payload.emotion。
                 "emotion": str(emotion_facts.get("emotion") or ""),
             },
@@ -1813,6 +2021,19 @@ class AuraPersonaGateway:
         )
         body = result.response.strip() or task.fallback_text
         status = "sent" if result.ok else "failed"
+        # X3 来源 b：任务结果顺手钉一条便签，不用再喊一次"记在便签上"。
+        # 放在消息落库之前，钉没钉成都能记进这条消息的 metadata 里对账。
+        note_facts: dict[str, Any] | None = None
+        if result.ok:
+            try:
+                note_facts = self._auto_pin_agent_note(
+                    task=task,
+                    result_text=body,
+                    state=self.store.get_or_create_state(self.config.scope),
+                    request_id=request_id,
+                )
+            except Exception:
+                note_facts = None
         payload = {
             "source": "lily_persona_gateway",
             "request_id": request_id,
@@ -1824,6 +2045,8 @@ class AuraPersonaGateway:
                 "evidence": dict(result.evidence or {}),
             },
         }
+        if note_facts:
+            payload["pinned_note"] = note_facts
         self.store.save_im_message(
             self.config.scope,
             direction="aura",

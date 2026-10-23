@@ -71,6 +71,54 @@ static void note_text(char *dst, size_t dst_size, const char *src, int max_width
     }
 }
 
+/* Copy as many whole UTF-8 characters of src as fit in max_width.
+ * Returns the number of source bytes consumed. */
+static size_t note_fit(char *dst, size_t dst_size, const char *src, int max_width)
+{
+    if (!dst || dst_size == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+
+    size_t used = 0;
+    while (src[used] && used + 1 < dst_size) {
+        size_t bytes = 1;
+        unsigned char lead = (unsigned char)src[used];
+        if ((lead & 0xE0) == 0xC0) bytes = 2;
+        else if ((lead & 0xF0) == 0xE0) bytes = 3;
+        else if ((lead & 0xF8) == 0xF0) bytes = 4;
+        if (used + bytes >= dst_size) break;
+        memcpy(dst + used, src + used, bytes);
+        dst[used + bytes] = '\0';
+        if (font_utf8_width(dst) > max_width) {
+            dst[used] = '\0';
+            break;
+        }
+        used += bytes;
+    }
+    return used;
+}
+
+/* A note cell holds two lines; the second one is cut with "..." if needed. */
+static void draw_note_cell(uint8_t *buf, int bw, int x, int w,
+                           const char *src, const char *empty, uint8_t color)
+{
+    const int max_width = w - 10;
+    char line1[64];
+    char line2[64];
+    size_t consumed = note_fit(line1, sizeof(line1), src, max_width);
+    if (!line1[0]) {
+        centered_utf8(buf, bw, x, w, 253, empty, color);
+        return;
+    }
+    if (!src[consumed]) {
+        centered_utf8(buf, bw, x, w, 253, line1, color);
+        return;
+    }
+    note_text(line2, sizeof(line2), src + consumed, max_width);
+    centered_utf8(buf, bw, x, w, 242, line1, color);
+    centered_utf8(buf, bw, x, w, 263, line2, color);
+}
+
 static int weekday_for_state(const aura_state_t *state)
 {
     time_t now = time(NULL);
@@ -162,9 +210,6 @@ void panels_draw_info_board(uint8_t *graybuf, int width, int height,
     for (int i = 0; i < 3; ++i) {
         int cell_x = 8 + i * 128;
         if (i > 0) fill_rect(graybuf, width, height, cell_x, 238, 1, 47, fg);
-        char note[64];
-        note_text(note, sizeof(note), state->info_notes[i], 118);
-        centered_utf8(graybuf, width, cell_x, 128, 253,
-                      note[0] ? note : empty_note, fg);
+        draw_note_cell(graybuf, width, cell_x, 128, state->info_notes[i], empty_note, fg);
     }
 }

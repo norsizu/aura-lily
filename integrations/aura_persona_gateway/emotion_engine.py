@@ -402,8 +402,21 @@ def read_emotion_state(state: Any) -> dict[str, Any]:
     return dict(stored) if isinstance(stored, dict) else {}
 
 
-def write_emotion_state(state: Any, *, emotion: Any, cause: Any = "", intensity: Any = 0, at: Any = None) -> dict[str, Any]:
-    """把本轮情绪写进 ``state["metadata"]["emotion_state"]``（原地改，返回同一个 dict）。"""
+def write_emotion_state(
+    state: Any,
+    *,
+    emotion: Any,
+    cause: Any = "",
+    intensity: Any = 0,
+    at: Any = None,
+    resolution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """把本轮情绪写进 ``state["metadata"]["emotion_state"]``（原地改，返回同一个 dict）。
+
+    ``resolution`` 是 X1 大屏要的"这一轮情绪怎么定下来的"：LLM 自评还是规则兜底、
+    被状态调制前后是什么、有没有被上一轮情绪惯性拉住。带上它，投影上就能把
+    "happy 怎么变成 neutral"讲清楚，不用再猜。
+    """
     if not isinstance(state, dict):
         return {}
     metadata = state.get("metadata")
@@ -415,13 +428,22 @@ def write_emotion_state(state: Any, *, emotion: Any, cause: Any = "", intensity:
         strength = int(round(float(intensity)))
     except (TypeError, ValueError):
         strength = DEFAULT_INTENSITY
-    metadata[EMOTION_STATE_KEY] = {
+    payload = {
         "emotion": value,
         "label": emotion_label(value),
         "intensity": max(MIN_INTENSITY, min(MAX_INTENSITY, strength or DEFAULT_INTENSITY)),
         "cause": str(cause or ""),
         "at": float(at if at is not None else time.time()),
     }
+    if isinstance(resolution, dict) and resolution:
+        payload["last_resolution"] = {
+            "source": str(resolution.get("source") or ""),
+            "raw": str(resolution.get("raw") or ""),
+            "modulated_from": str(resolution.get("modulated_from") or ""),
+            "inertia_from": str(resolution.get("inertia_from") or ""),
+            "reason": str(resolution.get("reason") or ""),
+        }
+    metadata[EMOTION_STATE_KEY] = payload
     return state
 
 

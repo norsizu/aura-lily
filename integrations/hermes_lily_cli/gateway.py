@@ -55,12 +55,19 @@ try:
     from integrations.aura_persona_gateway.emotion_engine import EmotionTagStripper, normalize_emotion, strip_emotion_tag
     from integrations.aura_persona_gateway.grounded_intent import classify_grounded_current_intent
     from integrations.aura_persona_gateway.llm import open_pooled_http_request, warm_pooled_http_url
+    from integrations.aura_persona_gateway.pinned_notes import (
+        INFO_BOARD_NOTE_LIMIT,
+        merge_info_board_notes,
+        read_note_signal,
+        read_pinned_notes,
+    )
     from integrations.aura_persona_gateway.query_context import resolve_query_context
     from integrations.aura_persona_gateway.response_contract import normalize_spoken_reply
     from integrations.aura_persona_gateway.runtime import AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
     from integrations.aura_persona_gateway.desserts import apply_dessert_purchase
     from integrations.aura_persona_gateway.state_rules import apply_time_recovery, compute_affinity_level
     from integrations.aura_persona_gateway.store import LilyPersonaStore
+    from integrations.aura_persona_gateway.trace_data import read_state_at as trace_read_state_at
     from integrations.aura_persona_gateway.weather import refresh_cached_weather_if_needed, refresh_user_weather_if_needed
     from integrations.aura_persona_gateway.world import build_world_snapshot
 except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge only
@@ -71,7 +78,12 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     cached_weather_snapshot = None
     compute_affinity_level = None
     EmotionTagStripper = None
+    INFO_BOARD_NOTE_LIMIT = None
     LilyPersonaStore = None
+    merge_info_board_notes = None
+    read_note_signal = None
+    read_pinned_notes = None
+    trace_read_state_at = None
     load_aura_runtime_config = None
     load_persona_config = None
     normalize_emotion = None
@@ -284,6 +296,8 @@ SERVER_VAD_MIN_AUDIO_MS = _env_int("AURA_SERVER_VAD_MIN_AUDIO_MS", 700, minimum=
 GATEWAY_STATUS_PATH = os.environ.get("AURA_LILY_GATEWAY_STATUS_PATH", ".aura/persona/config/gateway_status.json")
 GATEWAY_LOG_TRANSCRIPT_PREVIEW = _env_bool("AURA_GATEWAY_LOG_TRANSCRIPT_PREVIEW", True)
 BACKGROUND_POLL_INTERVAL_SECONDS = 1.0
+# X3：便签信号文件的分辨。1 秒足够"说完就贴上"，又不至于把 CPU 拖起来。
+NOTE_SIGNAL_POLL_SECONDS = 1.0
 BACKGROUND_POLL_TIMEOUT_SECONDS = 90.0
 BACKGROUND_PROGRESS_INTERVAL_SECONDS = 3.0
 WORLD_SYNC_POLL_INTERVAL_SECONDS = _env_float(
@@ -3191,6 +3205,29 @@ async def _fire_voice_reminder(reminder_id: str, fire_at: float, announce: str) 
         _SCHEDULED_REMINDER_INFO.pop(reminder_id, None)
 
 
+def companion_pinned_notes() -> list[dict[str, Any]]:
+    """X3：读 bridge 写进 companion.db 的便签（``metadata.pinned_notes``）。
+
+    bridge（HTTP 服务进程）负责钉便签，网关（WS 进程）只负责下发——两个进程
+    靠同一个 companion.db 对齐。这里刻意用 mode=ro 直连而不是
+    ``LilyPersonaStore.get_or_create_state``：便签是纯读取，不该触发建表或写入。
+    """
+    if not load_persona_config or not read_pinned_notes or not trace_read_state_at:
+        return []
+    try:
+        persona_config = load_persona_config()
+        state = trace_read_state_at(
+            persona_config.companion_db_path,
+            platform=persona_config.scope.platform,
+            chat_id=persona_config.scope.chat_id,
+            user_id=persona_config.scope.user_id,
+        )
+        return read_pinned_notes(state)
+    except Exception as exc:
+        log_gateway("companion_notes_read_failed", detail=str(exc)[:200])
+        return []
+
+
 def pending_info_board_notes(*, now: float | None = None) -> list[str]:
     """Return the next three live reminders for the device idle board."""
 
@@ -3222,8 +3259,31 @@ async def send_status_update(websocket: Any, runtime_config: Any) -> None:
 
 
 async def poll_world_status_updates(websocket: Any, runtime_config: Any) -> None:
+    # X3：钉上/清空便签后要"立刻"下发，但 bridge 是另一个进程，没法直接通知网关。
+    # 折中办法：把轮询切成 1 秒的小片，期间盯着 bridge 拨的信号文件；一旦 revision
+    # 变了就提前推一次。没有常驻线程，也没有缓存，只是睡眠被切碎了。
+    note_revision = read_note_signal(load_persona_config()) if load_persona_config and read_note_signal else 0.0
     while True:
-        await asyncio.sleep(WORLD_SYNC_POLL_INTERVAL_SECONDS)
+        deadline = time.monotonic() + WORLD_SYNC_POLL_INTERVAL_SECONDS
+        pushed_early = False
+        while time.monotonic() < deadline:
+            await asyncio.sleep(NOTE_SIGNAL_POLL_SECONDS)
+            if not (load_persona_config and read_note_signal):
+                break
+            revision = read_note_signal(load_persona_config())
+            if revision <= note_revision:
+                continue
+            note_revision = revision
+            try:
+                await send_status_update(websocket, runtime_config)
+            except ConnectionClosed:
+                return
+            except Exception as exc:  # pragma: no cover - defensive async boundary
+                log_gateway("world_status_update_failed", detail=exc.__class__.__name__)
+            pushed_early = True
+            break
+        if pushed_early:
+            continue
         try:
             await send_status_update(websocket, runtime_config)
         except ConnectionClosed:
@@ -3609,7 +3669,11 @@ def status_update_payload(runtime_config: Any, *, now: float | None = None) -> d
     # Aura 数值状态（体力/心情/饱腹/好感）——设备主界面靠它刷新。
     payload: dict[str, Any] = dict(companion_status_fields())
     payload.update(companion_world_status_fields(runtime_config, now=now))
-    payload["notes"] = pending_info_board_notes(now=now)
+    payload["notes"] = merge_info_board_notes(
+        pending_info_board_notes(now=now),
+        companion_pinned_notes(),
+        limit=INFO_BOARD_NOTE_LIMIT if INFO_BOARD_NOTE_LIMIT else 3,
+    )
     with _QUOTA_CACHE_LOCK:
         aura_cached = _MODEL_QUOTA_CACHE.get(_model_quota_cache_key(runtime_config))
     aura_result = aura_cached[1] if aura_cached else None

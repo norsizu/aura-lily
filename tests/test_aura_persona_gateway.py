@@ -1078,8 +1078,10 @@ def test_voice_turn_answers_mood_from_state_without_model(tmp_path):
         fast_reply_mode="hermes_main",
     )
 
+    # X2 起 "你心情怎么样" 算"问她为什么"，要走模型；这里用非自指问法继续覆盖
+    # state_mood 这条本地快路径本身。
     result = execute_voice_turn(
-        "你今天心情怎么样？",
+        "我今天心情怎么样？",
         fastpath={"intent": "chat"},
         runtime_config=runtime,
         state_summary={"mood": 86, "energy": 42, "stress": 8, "trust": 72},
@@ -2229,7 +2231,7 @@ def test_persona_turn_short_circuits_recent_quality_examples(tmp_path, monkeypat
     )
     gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
 
-    mood = gateway.run_turn("你今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
+    mood = gateway.run_turn("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
     outing = gateway.run_turn(
         "我今天下午打算出门。",
         metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}},
@@ -4134,7 +4136,7 @@ def test_direct_aura_model_stream_sends_state_mood_as_local_delta(tmp_path, monk
     )
     gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
 
-    events = list(gateway.run_direct_turn_stream("你今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
+    events = list(gateway.run_direct_turn_stream("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
 
     assert [item.get("type") for item in events] == ["delta", "delta", "final"]
     assert events[0]["source"] == "local_preface"
@@ -4182,7 +4184,7 @@ def test_direct_aura_model_stream_dedupes_state_mood_preface_tail(tmp_path, monk
     )
     gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
 
-    events = list(gateway.run_direct_turn_stream("你今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
+    events = list(gateway.run_direct_turn_stream("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
 
     assert [item.get("type") for item in events] == ["delta", "final"]
     final = events[1]["payload"]
@@ -4216,7 +4218,7 @@ def test_hermes_agent_stream_sends_state_mood_as_local_delta(tmp_path, monkeypat
     )
     gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
 
-    events = list(gateway.run_direct_turn_stream("你今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
+    events = list(gateway.run_direct_turn_stream("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
 
     assert [item.get("type") for item in events] == ["delta", "final"]
     assert events[0]["source"] == "local_voice_reply"

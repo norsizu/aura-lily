@@ -17,6 +17,8 @@ HIDDEN_DRIVE_FIELDS = ("social_need", "curiosity", "privacy_sensitivity", "resou
 # ``coins`` 是 ``beans`` 的镜像列，只读快照里带上它，方便追溯工具展示。
 SNAPSHOT_FIELDS = TRACKED_FIELDS + ("coins",)
 LEDGER_EVENT_PREFIX = "ledger."
+# X3 的便签钉上/清空也走账本（source="note"），数值不变，只为留一行可追溯记录。
+LEDGER_SOURCE_NOTE = "note"
 LEDGER_SOURCES = (
     "world_clock",
     "hunger_drive",
@@ -25,6 +27,7 @@ LEDGER_SOURCES = (
     "dialogue",
     "emotion",
     "interaction",
+    LEDGER_SOURCE_NOTE,
 )
 # 离线回顾里给用户看的中文字段名（W3）。
 RECAP_FIELD_LABELS = {

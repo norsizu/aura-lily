@@ -41,6 +41,7 @@ from .gateway import (
     synthesize_tts,
     transcribe_with_api,
 )
+from .trace_page import TRACE_PAGE_HTML
 
 try:
     from integrations.aura_persona_gateway.admin import (
@@ -67,6 +68,7 @@ try:
     )
     from integrations.aura_persona_gateway.runtime import load_aura_runtime_config
     from integrations.aura_persona_gateway.store import LilyPersonaStore
+    from integrations.aura_persona_gateway.trace_data import collect_showcase_trace
     from integrations.aura_persona_gateway.turn import AuraPersonaGateway
 except ImportError:  # pragma: no cover - persona gateway can be omitted in tiny builds
     aura_runtime = None
@@ -89,6 +91,7 @@ except ImportError:  # pragma: no cover - persona gateway can be omitted in tiny
     update_persona_state = None
     AuraPersonaGateway = None
     LilyPersonaStore = None
+    collect_showcase_trace = None
 
     def normalize_city_name(value: Any) -> str:
         return str(value or "").strip()
@@ -99,6 +102,11 @@ DEFAULT_MAX_CONCURRENCY = 1
 DEFAULT_QUEUE_TIMEOUT_SECONDS = 30.0
 USER_GEO_CACHE_TTL_SECONDS = 900
 ADMIN_TOKEN_ENV = "AURA_LILY_ADMIN_TOKEN"
+# X1 X-Ray 大屏的令牌。只从环境读，绝不写进仓库；没设置时 /trace 直接 404，
+# 免得路演现场误把内部数值投出去。
+TRACE_TOKEN_ENV = "AURA_TRACE_TOKEN"
+TRACE_PAGE_PATH = "/trace"
+TRACE_DATA_PATH = "/trace/data"
 LEGACY_ADMIN_TOKEN_ENV = "AURA_PERSONA_ADMIN_TOKEN"
 ADMIN_USER_ENV = "AURA_LILY_ADMIN_USER"
 LEGACY_ADMIN_USER_ENV = "AURA_PERSONA_ADMIN_USER"
@@ -889,6 +897,17 @@ def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
                 response = runtime.persona_world()
                 self._send_json(response, status=200 if response.get("ok") else 500)
                 return
+            # X1 X-Ray 大屏。未设令牌时两个路由都不存在；令牌不匹配返回 403。
+            if request_path == TRACE_PAGE_PATH:
+                if not self._trace_token_ok():
+                    return
+                self._send_html(TRACE_PAGE_HTML)
+                return
+            if request_path == TRACE_DATA_PATH:
+                if not self._trace_token_ok():
+                    return
+                self._send_json(self._trace_payload(runtime))
+                return
             self._send_json({"ok": False, "error": "not_found"}, status=404)
 
         def do_POST(self) -> None:
@@ -1054,6 +1073,47 @@ def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _trace_token_ok(self) -> bool:
+            """X1 大屏鉴权：未设 AURA_TRACE_TOKEN → 404；带错 token → 403。
+
+            用 hmac.compare_digest 比字符串，避免按字节逐位比较泄露信息。
+            令牌只活在环境变量里，仓库任何文件都不写。
+            """
+            expected = str(os.environ.get(TRACE_TOKEN_ENV) or "")
+            if not expected:
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return False
+            supplied = ""
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                supplied = (query.get("token") or [""])[0]
+            except (ValueError, IndexError):
+                supplied = ""
+            if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+                self._send_json({"ok": False, "error": "forbidden"}, status=403)
+                return False
+            return True
+
+        @staticmethod
+        def _trace_payload(runtime: LilyRuntime) -> dict[str, Any]:
+            """X1 大屏数据。每次请求重开一个只读连接，不缓存——路演时要看实时值。"""
+            persona_config = runtime.persona_config
+            if not persona_config or not collect_showcase_trace:
+                return {"ok": False, "error": "persona_unavailable"}
+            try:
+                payload = collect_showcase_trace(
+                    persona_config.companion_db_path,
+                    platform=persona_config.scope.platform,
+                    chat_id=persona_config.scope.chat_id,
+                    user_id=persona_config.scope.user_id,
+                )
+            except FileNotFoundError:
+                return {"ok": False, "error": "db_missing"}
+            except Exception as exc:  # pragma: no cover - defensive HTTP boundary
+                return {"ok": False, "error": exc.__class__.__name__}
+            payload["ok"] = True
+            return payload
 
         def _admin_allowed(self) -> bool:
             headers = {key.lower(): value for key, value in self.headers.items()}

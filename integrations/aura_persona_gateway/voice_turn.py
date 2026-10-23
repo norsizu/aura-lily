@@ -8,8 +8,10 @@ from enum import Enum
 from typing import Any
 
 from .city_names import normalize_city_name
+from .pinned_notes import note_command_reply, parse_note_command
 from .reminders import parse_reminder_request
 from .runtime import AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
+from .self_why import is_self_why_question
 from .time_context import current_time_snapshot, current_time_spoken_reply
 
 
@@ -131,6 +133,34 @@ def execute_voice_turn(
         return _result(VoiceTurnVerdict.SPEAK_NOW, started, "voice_turn_disabled", route=route, mode=runtime.fast_reply_mode)
     if not raw or not normalized or TRIVIAL_NOISE_RE.match(normalized):
         return _result(VoiceTurnVerdict.SILENT_DROP, started, "empty_or_noise", route=route, mode=runtime.fast_reply_mode)
+    # X3 便签指令必须排在安全拒绝之前："清空便签/把便签删了"字面上命中
+    # REFUSE_RE 的"清空/删除"，但它是用户让自己桌上的便签消失，不是危险操作。
+    note_command = parse_note_command(raw)
+    if note_command is not None:
+        action = str(note_command.get("action") or "")
+        return _result(
+            VoiceTurnVerdict.SPEAK_NOW,
+            started,
+            "note_clear" if action == "clear" else "note_pin",
+            speak=note_command_reply(note_command),
+            emotion="calm",
+            route=route,
+            mode=runtime.fast_reply_mode,
+            extra_debug={"pinned_note": note_command},
+        )
+    # X2"问她为什么"必须绕过所有规则快答：这类问题要模型看着生活账本回答，
+    # 本地规则只会拿数值凑一句（"心情还算稳"），等于把可追溯性丢掉了。
+    # 这里返回空 speak_text，路由层见空话术就不会走本地回复，转模型。
+    if is_self_why_question(raw):
+        return _result(
+            VoiceTurnVerdict.SPEAK_NOW,
+            started,
+            "self_why",
+            emotion="",
+            route=route,
+            mode=runtime.fast_reply_mode,
+            extra_debug={"self_why": {"matched": True}},
+        )
     if REFUSE_RE.search(raw):
         return _result(
             VoiceTurnVerdict.REFUSE_NOW,
