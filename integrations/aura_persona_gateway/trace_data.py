@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .emotion_engine import EMOTION_LABELS, EMOTION_VOICE_TONES, strip_emotion_tag
 from .pinned_notes import PINNED_NOTES_STATE_KEY, read_pinned_notes
 from .self_why import SELF_WHY_STATE_KEY, read_self_why_state
 from .world_ledger import (
@@ -26,6 +27,8 @@ DRIVE_LABELS = {field: RECAP_FIELD_LABELS.get(field, field) for field in HIDDEN_
 DRIVE_LABELS["drives_snapshot_v1"] = "驱动快照"
 # 大屏账本流水默认只显示最近 15 条，多了投屏上看不清。
 SHOWCASE_LEDGER_LIMIT = 15
+# 大屏"她听到 / 她说"取这些消息类型；后台任务结果也算她说的话。
+EXCHANGE_REPLY_TYPES = ("aura_text", "background_task_result")
 
 
 def as_int(value: Any, default: int = 0) -> int:
@@ -209,11 +212,17 @@ def ledger_row(event: dict[str, Any], *, city: str) -> dict[str, Any]:
     delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
     before = payload.get("before") if isinstance(payload.get("before"), dict) else {}
     after = payload.get("after") if isinstance(payload.get("after"), dict) else {}
-    changes = [
-        f"{RECAP_FIELD_LABELS.get(field, field)} {as_int(before.get(field), 0)}→{as_int(after.get(field), 0)}"
+    change_items = [
+        {
+            "field": str(field),
+            "label": RECAP_FIELD_LABELS.get(field, field),
+            "before": as_int(before.get(field), 0),
+            "after": as_int(after.get(field), 0),
+        }
         for field in list(before) or list(after)
         if as_int(before.get(field), 0) != as_int(after.get(field), 0)
     ]
+    changes = [f"{item['label']} {item['before']}→{item['after']}" for item in change_items]
     return {
         "time": fmt_time(event.get("created_at"), city=city),
         "created_at": as_float(event.get("created_at")),
@@ -224,6 +233,7 @@ def ledger_row(event: dict[str, Any], *, city: str) -> dict[str, Any]:
         "cause": str(payload.get("cause") or event.get("description") or ""),
         "parent_key": str(payload.get("parent_key") or "") or None,
         "changes": changes,
+        "change_items": change_items,
         "delta": delta,
         "location": str(event.get("location") or ""),
         "activity": str(event.get("activity") or ""),
@@ -377,6 +387,88 @@ def format_resolution_chain(resolution: dict[str, Any], *, emotion: Any = "") ->
     return " → ".join(parts)
 
 
+def read_last_exchange(conn: sqlite3.Connection, *, platform: str, chat_id: str, user_id: str) -> dict[str, Any]:
+    """大屏"她听到 / 她说"：最近一句用户原话，和它之后她回的第一句。"""
+    heard = conn.execute(
+        """
+        SELECT body, created_at FROM companion_im_message
+         WHERE platform=? AND chat_id=? AND user_id=? AND direction='user'
+         ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (platform, chat_id, user_id),
+    ).fetchone()
+    if heard is None:
+        return {}
+    placeholders = ",".join("?" for _ in EXCHANGE_REPLY_TYPES)
+    said = conn.execute(
+        f"""
+        SELECT body, created_at FROM companion_im_message
+         WHERE platform=? AND chat_id=? AND user_id=? AND direction='aura'
+           AND message_type IN ({placeholders}) AND created_at >= ?
+         ORDER BY created_at ASC, id ASC LIMIT 1
+        """,
+        (platform, chat_id, user_id, *EXCHANGE_REPLY_TYPES, as_float(heard[1])),
+    ).fetchone()
+    return {
+        "heard": str(heard[0] or "").strip(),
+        "heard_at": as_float(heard[1]),
+        "said": strip_emotion_tag(str(said[0] or ""))[0].strip() if said else "",
+        "said_at": as_float(said[1]) if said else 0.0,
+    }
+
+
+def place_from_world_state(world_state: Any, *, since: Any = 0.0) -> dict[str, Any]:
+    """世界状态快照（``metadata.world_v2`` 或转场事件的 after）→ 大屏顶栏的地点胶囊。"""
+    if not isinstance(world_state, dict) or not (world_state.get("location_label") or world_state.get("location_key")):
+        return {}
+    weather = world_state.get("weather") if isinstance(world_state.get("weather"), dict) else {}
+    return {
+        "location": str(world_state.get("location_label") or world_state.get("location_key") or ""),
+        "activity": str(world_state.get("activity_label") or ""),
+        "weather": str(weather.get("condition") or ""),
+        "since": as_float(world_state.get("since") or since),
+    }
+
+
+def current_place(state: dict[str, Any]) -> dict[str, Any]:
+    """优先读 state 里的 ``world_v2``：每次世界快照都会刷新它，比最后一条转场事件新。"""
+    metadata = state.get("metadata") if state and isinstance(state.get("metadata"), dict) else {}
+    return place_from_world_state(metadata.get("world_v2"))
+
+
+def read_current_place(conn: sqlite3.Connection, *, platform: str, chat_id: str, user_id: str) -> dict[str, Any]:
+    """她现在在哪、在做什么：取最近一次世界转场写下的 after 快照（state 里没有 world_v2 时兜底）。"""
+    row = conn.execute(
+        """
+        SELECT delta_json, created_at FROM companion_life_event
+         WHERE platform=? AND chat_id=? AND user_id=? AND event_type LIKE 'world.%'
+         ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (platform, chat_id, user_id),
+    ).fetchone()
+    if row is None:
+        return {}
+    return place_from_world_state(json_object(row[0]).get("after"), since=row[1])
+
+
+def emotion_effects(emotion_row: dict[str, Any], ledger_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """这份情绪落到了哪里：账本里那条 emotion 流水的数值变化 + TTS 语气 + 设备脸。"""
+    emotion = str(emotion_row.get("emotion") or "")
+    if not emotion:
+        return {}
+    at = as_float(emotion_row.get("at"))
+    changes: list[dict[str, Any]] = []
+    for row in ledger_rows:
+        if row.get("source") == "emotion" and abs(as_float(row.get("created_at")) - at) < 5:
+            changes = list(row.get("change_items") or [])
+            break
+    return {
+        "voice_tone": EMOTION_VOICE_TONES.get(emotion, "平常的语气"),
+        "face": emotion,
+        "changes": changes,
+    }
+
+
 def showcase_notes_row(state: dict[str, Any]) -> list[dict[str, Any]]:
     """``notes``：X3 钉在信息板上的便签，新的在前。"""
     return read_pinned_notes(state)
@@ -427,6 +519,8 @@ def collect_showcase_trace(
             user_id=user_id,
             limit=ledger_limit,
         )
+        exchange = read_last_exchange(conn, platform=platform, chat_id=chat_id, user_id=user_id)
+        place = current_place(state) or read_current_place(conn, platform=platform, chat_id=chat_id, user_id=user_id)
         city = ""
         for item in plan:
             payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
@@ -438,6 +532,10 @@ def collect_showcase_trace(
     rows = state_row(state) if state else {}
     plan_rows = [plan_row(item) for item in plan]
     mark_current_plan_slot(plan_rows, now=stamp)
+    emotion = showcase_emotion_row(state) if state else {}
+    ledger_rows = [ledger_row(event, city=city) for event in recent]
+    if emotion:
+        emotion["effects"] = emotion_effects(emotion, ledger_rows)
     return {
         "db": str(path),
         "scope": {"platform": platform, "chat_id": chat_id, "user_id": user_id},
@@ -446,8 +544,12 @@ def collect_showcase_trace(
         "server_time": stamp,
         "server_time_text": dt.datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M:%S"),
         "state": rows,
-        "emotion": showcase_emotion_row(state) if state else {},
-        "ledger": [ledger_row(event, city=city) for event in recent],
+        "emotion": emotion,
+        "emotion_labels": dict(EMOTION_LABELS),
+        "field_labels": dict(RECAP_FIELD_LABELS),
+        "exchange": exchange,
+        "place": place,
+        "ledger": ledger_rows,
         "plan": plan_rows,
         "notes": showcase_notes_row(state),
         "why": showcase_why_row(state),
@@ -477,6 +579,7 @@ __all__ = [
     "city_tzinfo",
     "collect_showcase_trace",
     "collect_trace",
+    "emotion_effects",
     "fmt_time",
     "format_resolution_chain",
     "json_object",
@@ -484,6 +587,10 @@ __all__ = [
     "like_clause",
     "mark_current_plan_slot",
     "plan_row",
+    "current_place",
+    "place_from_world_state",
+    "read_current_place",
+    "read_last_exchange",
     "read_ledger",
     "read_plan",
     "read_recent_ledger",

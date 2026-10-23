@@ -52,7 +52,12 @@ from integrations.hermes_lily_cli.voice_providers import (
 
 try:
     from integrations.aura_persona_gateway.config import load_persona_config
-    from integrations.aura_persona_gateway.emotion_engine import EmotionTagStripper, normalize_emotion, strip_emotion_tag
+    from integrations.aura_persona_gateway.emotion_engine import (
+        EMOTION_VOICE_TONES,
+        EmotionTagStripper,
+        normalize_emotion,
+        strip_emotion_tag,
+    )
     from integrations.aura_persona_gateway.grounded_intent import classify_grounded_current_intent
     from integrations.aura_persona_gateway.llm import open_pooled_http_request, warm_pooled_http_url
     from integrations.aura_persona_gateway.pinned_notes import (
@@ -77,6 +82,7 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     classify_grounded_current_intent = None
     cached_weather_snapshot = None
     compute_affinity_level = None
+    EMOTION_VOICE_TONES = None
     EmotionTagStripper = None
     INFO_BOARD_NOTE_LIMIT = None
     LilyPersonaStore = None
@@ -2584,15 +2590,7 @@ def strip_reply_emotion_tag(text: str) -> tuple[str, str]:
 # StepFun stepaudio-2.5/3 TTS 的行内语气（Inline Context）：句首括号里的话只当指令、
 # 不会念出来。instruction 是会话级的、预热会话建好时还不知道情绪，所以走行内。
 STEPFUN_INLINE_EMOTION_MODELS = ("stepaudio-2.5-tts", "stepaudio-3-tts")
-STEPFUN_EMOTION_INLINE = {
-    "happy": "开心，语气轻快",
-    "excited": "兴奋，语速稍快，充满活力",
-    "shy": "害羞，声音轻柔，有点腼腆",
-    "sad": "难过，语气低落，语速放慢",
-    "worried": "担心，语气关切，略带不安",
-    "pouty": "委屈，带点小抱怨",
-    "surprised": "惊讶，语调上扬",
-}
+STEPFUN_EMOTION_INLINE = EMOTION_VOICE_TONES if EMOTION_VOICE_TONES else {}
 
 
 def stepfun_emotion_text(runtime_config: Any, text: str, emotion: str) -> str:

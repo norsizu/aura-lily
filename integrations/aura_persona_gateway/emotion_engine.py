@@ -29,6 +29,18 @@ EMOTION_LABELS = {
     "surprised": "惊讶",
 }
 
+# TTS 语气提示（StepFun 行内语气用；X-Ray 大屏也拿它展示"她会怎么说"）。
+# neutral 不加提示，按默认声线说。
+EMOTION_VOICE_TONES = {
+    "happy": "开心，语气轻快",
+    "excited": "兴奋，语速稍快，充满活力",
+    "shy": "害羞，声音轻柔，有点腼腆",
+    "sad": "难过，语气低落，语速放慢",
+    "worried": "担心，语气关切，略带不安",
+    "pouty": "委屈，带点小抱怨",
+    "surprised": "惊讶，语调上扬",
+}
+
 # 旧值兼容：voice_turn 的规则回复和历史 metadata 里还留着这些词。
 # 映射不到 E1 的一律算无效（normalize_emotion 返回 ""）。
 LEGACY_EMOTION_ALIASES = {

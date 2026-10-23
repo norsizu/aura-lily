@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 import threading
@@ -193,8 +194,11 @@ def test_trace_page_is_self_contained(tmp_path, monkeypatch):
     finally:
         _stop(server, thread)
 
-    # 路演现场可能没有外网：页面不能引任何 CDN/字体/脚本。
-    lowered = page_body.lower()
+    # 路演现场可能没有外网：页面不能引任何 CDN/字体/脚本。情绪脸是内联的
+    # data URI，先把它们剥掉再查，免得 base64 里碰巧拼出关键字。
+    faces = re.findall(r"data:image/png;base64,[A-Za-z0-9+/=]+", page_body)
+    assert len(faces) == 8, "八种情绪脸都要内联"
+    lowered = re.sub(r"data:image/png;base64,[A-Za-z0-9+/=]+", "", page_body).lower()
     for marker in ("http://", "https://", "//cdn", "src=", "@import", "url("):
         assert marker not in lowered, marker
     # 令牌从页面自己的 URL 里取，然后拿去轮询 /trace/data。
@@ -254,6 +258,39 @@ def test_trace_data_payload_carries_every_panel(tmp_path):
 
     assert payload["why"]["event_keys"] == ["ledger-why-key"]
     assert payload["why"]["question"] == "你为什么不开心"
+
+
+def test_trace_data_payload_explains_where_the_emotion_landed(tmp_path):
+    config, store = _seed_db(tmp_path)
+    store.save_im_message(config.scope, direction="user", body="今天带你去看海", message_type="user_text")
+    store.save_im_message(config.scope, direction="aura", body="好呀！<emo:happy>", message_type="aura_text")
+
+    payload = collect_showcase_trace(config.companion_db_path, now=NOW)
+
+    # 大屏"她听到 / 她说"：她的回复要去掉 <emo:...> 标签再上屏。
+    assert payload["exchange"]["heard"] == "今天带你去看海"
+    assert payload["exchange"]["said"] == "好呀！"
+    # 世界模型跑过一次，就知道她在哪、在做什么、什么天气。
+    assert payload["place"]["location"]
+    assert payload["place"]["weather"] == "小雨"
+    # 情绪落地：语气 + 设备脸；页面用的中文标签也一起下发。
+    effects = payload["emotion"]["effects"]
+    assert effects["face"] == "neutral"
+    assert effects["voice_tone"] == "平常的语气"
+    assert payload["emotion_labels"]["happy"] == "高兴"
+    assert payload["field_labels"]["mood"] == "心情"
+    # 账本每行的变化拆成结构化条目，页面据此画涨跌色块。
+    for row in payload["ledger"]:
+        items = row["change_items"]
+        assert [f"{item['label']} {item['before']}→{item['after']}" for item in items] == row["changes"]
+
+
+def test_trace_data_exchange_is_empty_before_any_dialogue(tmp_path):
+    config, _store = _seed_db(tmp_path)
+
+    payload = collect_showcase_trace(config.companion_db_path, now=NOW)
+
+    assert payload["exchange"] == {}
 
 
 def test_trace_data_payload_marks_nothing_current_when_plan_is_empty(tmp_path):
