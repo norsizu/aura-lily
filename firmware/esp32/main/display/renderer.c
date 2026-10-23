@@ -51,7 +51,7 @@ static uint8_t s_gamma_lut[256];
 static render_dither_mode_t s_dither_mode = DITHER_HYBRID_INK;
 
 /* --- Character vertical offset: +25px confirmed good --- */
-static int s_char_y_offset = 25;
+static int s_char_y_offset = 0;
 
 static const char *s_dither_names[DITHER_MODE_COUNT] = {
     "FS Floyd",
