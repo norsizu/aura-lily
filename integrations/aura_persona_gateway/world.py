@@ -824,7 +824,7 @@ def generate_day_plan(
             why={
                 "rule": "anchor",
                 "inputs": {"energy": energy, "mood": mood},
-                "text": "每日固定锚点：起床时间只做小幅抖动",
+                "text": "每日锚点：起床时间只做小幅抖动",
             },
         ),
         _slot(
@@ -842,7 +842,7 @@ def generate_day_plan(
             why={
                 "rule": "anchor",
                 "inputs": {"satiety": satiety},
-                "text": "每日固定锚点：早饭在家吃，顺手把昨晚的厨房收拾一下",
+                "text": "每日锚点：早饭在家吃，顺手把昨晚的厨房收拾一下",
             },
         ),
         _slot(
@@ -897,9 +897,9 @@ def generate_day_plan(
                     "lunch_out": lunch_out,
                 },
                 "text": (
-                    f"每日固定锚点：午饭外出（体力 {energy} ≥ 48、饱腹 {satiety} ≤ 88、天气 {_weather_label(weather_category)}）"
+                    f"每日锚点：午饭外出（体力 {energy} ≥ 48、饱腹 {satiety} ≤ 88、天气 {_weather_label(weather_category)}）"
                     if lunch_out
-                    else f"每日固定锚点：午饭在家做（体力 {energy}、饱腹 {satiety}、天气 {_weather_label(weather_category)}）"
+                    else f"每日锚点：午饭在家做（体力 {energy}、饱腹 {satiety}、天气 {_weather_label(weather_category)}）"
                 ),
             },
         ),
@@ -962,7 +962,7 @@ def generate_day_plan(
             why={
                 "rule": "anchor",
                 "inputs": {"satiety": satiety, "energy": energy},
-                "text": "每日固定锚点：晚饭在家吃，饭后碗留到睡得前再洗",
+                "text": "每日锚点：晚饭在家吃，饭后碗留到睡前再洗",
             },
         ),
         _slot(
@@ -980,7 +980,7 @@ def generate_day_plan(
             why={
                 "rule": "anchor",
                 "inputs": {"energy": energy, "stress": _coerce_int((state or {}).get("stress"), 0)},
-                "text": "每日固定锚点：睡前把一天收尾，准备休息",
+                "text": "每日锚点：睡前把一天收尾，准备休息",
             },
         ),
     ]
