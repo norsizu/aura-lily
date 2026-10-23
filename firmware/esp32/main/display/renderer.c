@@ -51,7 +51,7 @@ static uint8_t s_gamma_lut[256];
 static render_dither_mode_t s_dither_mode = DITHER_HYBRID_INK;
 
 /* --- Character vertical offset: +25px confirmed good --- */
-static int s_char_y_offset = 0;
+static int s_char_y_offset = 25;
 
 static const char *s_dither_names[DITHER_MODE_COUNT] = {
     "FS Floyd",
@@ -82,6 +82,22 @@ static int s_loaded_outfit = -1;
 static int s_loaded_scene = -1;
 #define CUSTOM_OUTFIT_CACHE_TAG (-1000)
 static char s_loaded_custom_path[128] = {0};
+
+/* The wardrobe/shop preview is redrawn at roughly 10 Hz. Cache the visible
+ * horizontal bounds so wide-pose detection does not rescan a 320x320 pose on
+ * every frame. */
+static int s_preview_bbox_outfit = -1;
+static int s_preview_bbox_pose = -1;
+static const uint8_t *s_preview_bbox_data = NULL;
+static int s_preview_content_left = 0;
+static int s_preview_content_right = -1;
+
+/* Outfit atlases reserve horizontal headroom for asymmetric gestures. Keep
+ * the loader compatible with older 220px cells while allowing new 320px
+ * cells to be extracted into the same PSRAM buffer. */
+#define CHARACTER_ATLAS_MAX_W 320
+#define CHARACTER_ATLAS_MAX_H 320
+#define CHARACTER_ERROR_STRIDE (CHARACTER_ATLAS_MAX_W + 2)
 
 static void fill_fallback_background(uint8_t *buf)
 {
@@ -154,9 +170,12 @@ void renderer_init(void)
     s_graybuf = heap_caps_calloc(1, RLCD_WIDTH * RLCD_HEIGHT, MALLOC_CAP_SPIRAM);
     s_framebuf = heap_caps_calloc(1, RLCD_FB_SIZE, MALLOC_CAP_SPIRAM);
     s_scene_buf = heap_caps_calloc(1, RLCD_WIDTH * RLCD_HEIGHT, MALLOC_CAP_SPIRAM);
-    s_pose_buf = heap_caps_calloc(1, 220 * 320, MALLOC_CAP_SPIRAM);
-    s_char_err_a = heap_caps_calloc(222, sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    s_char_err_b = heap_caps_calloc(222, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    s_pose_buf = heap_caps_calloc(1, CHARACTER_ATLAS_MAX_W * CHARACTER_ATLAS_MAX_H,
+                                  MALLOC_CAP_SPIRAM);
+    s_char_err_a = heap_caps_calloc(CHARACTER_ERROR_STRIDE, sizeof(int16_t),
+                                    MALLOC_CAP_SPIRAM);
+    s_char_err_b = heap_caps_calloc(CHARACTER_ERROR_STRIDE, sizeof(int16_t),
+                                    MALLOC_CAP_SPIRAM);
 
     if (!s_graybuf || !s_framebuf || !s_scene_buf || !s_pose_buf ||
         !s_char_err_a || !s_char_err_b) {
@@ -217,7 +236,8 @@ static void dither_character_to_graybuf(const uint8_t *src,
                                         int src_w, int src_h,
                                         int x_off, int y_off)
 {
-    if (!src || src_w <= 0 || src_h <= 0 || src_w > 220 ||
+    if (!src || src_w <= 0 || src_h <= 0 ||
+        src_w > CHARACTER_ATLAS_MAX_W || src_h > CHARACTER_ATLAS_MAX_H ||
         !s_char_err_a || !s_char_err_b) {
         return;
     }
@@ -823,19 +843,79 @@ void renderer_draw_character_preview_crop(int outfit_idx, int dst_x, int dst_y,
     if (src_w <= 0 || src_h <= 0) return;
 
     if (src_center_x < 0) src_center_x = src_w / 2;
+
+    /* The normal preview is intentionally a native-scale upper-body crop.
+     * Wide gestures (the open hand and hair-touch poses) do not fit in that
+     * 180px window, though, so find their visible bounds and render that pose
+     * proportionally instead of silently cutting off a hand or hair strand. */
+    int content_left;
+    int content_right;
+    if (s_preview_bbox_outfit == outfit_idx &&
+        s_preview_bbox_pose == pose_idx &&
+        s_preview_bbox_data == s_atlas.data) {
+        content_left = s_preview_content_left;
+        content_right = s_preview_content_right;
+    } else {
+        content_left = src_w;
+        content_right = -1;
+        for (int y = 0; y < src_h; y++) {
+            for (int x = 0; x < src_w; x++) {
+                if (s_pose_buf[y * src_w + x] == 0xFF) continue;
+                if (x < content_left) content_left = x;
+                if (x > content_right) content_right = x;
+            }
+        }
+        s_preview_bbox_outfit = outfit_idx;
+        s_preview_bbox_pose = pose_idx;
+        s_preview_bbox_data = s_atlas.data;
+        s_preview_content_left = content_left;
+        s_preview_content_right = content_right;
+    }
+
+    bool scaled_preview = content_right >= content_left &&
+                          content_right - content_left + 1 > view_w;
     int src_x0 = src_center_x - view_w / 2;
     int src_y0 = src_top_y;
+    int scale_num = 1;
+    int scale_den = 1;
+    if (scaled_preview) {
+        const int margin = 4;
+        src_x0 = content_left - margin;
+        if (src_x0 < 0) src_x0 = 0;
+        int src_x1 = content_right + margin;
+        if (src_x1 >= src_w) src_x1 = src_w - 1;
+        int source_region_w = src_x1 - src_x0 + 1;
+        if (source_region_w <= 0) return;
+
+        /* Fit the complete visible width into the requested viewport. */
+        scale_num = view_w;
+        scale_den = source_region_w;
+
+        /* Keep the established top framing, but make the source window tall
+         * enough for the same uniform scale. Clamp it to the atlas. */
+        int source_region_h = (view_h * scale_den + scale_num - 1) / scale_num;
+        if (source_region_h > src_h) source_region_h = src_h;
+        if (src_y0 < 0) src_y0 = 0;
+        if (src_y0 + source_region_h > src_h) {
+            src_y0 = src_h - source_region_h;
+            if (src_y0 < 0) src_y0 = 0;
+        }
+    }
 
     for (int y = 0; y < view_h; y++) {
         int sy = dst_y + y;
         if (sy < 0 || sy >= RLCD_HEIGHT) continue;
-        int src_y = src_y0 + y;
+        int src_y = scaled_preview
+            ? src_y0 + (y * scale_den + scale_num / 2) / scale_num
+            : src_y0 + y;
         if (src_y < 0 || src_y >= src_h) continue;
 
         for (int x = 0; x < view_w; x++) {
             int sx = dst_x + x;
             if (sx < 0 || sx >= RLCD_WIDTH) continue;
-            int src_x = src_x0 + x;
+            int src_x = scaled_preview
+                ? src_x0 + (x * scale_den + scale_num / 2) / scale_num
+                : src_x0 + x;
             if (src_x < 0 || src_x >= src_w) continue;
 
             uint8_t pixel = s_pose_buf[src_y * src_w + src_x];

@@ -1913,7 +1913,7 @@ static void display_task(void *arg)
                                tr_text(&T_SHOP_BUY),
                                tr_text(&T_SHOP_FOOTER));
             /* 商店用原始比例裁切预览：显示更大的 2/3 人物，避免缩小后线条碎裂。 */
-            renderer_draw_character_preview_crop(shop_outfit, 12, 54, 180, 216, 100, 8,
+            renderer_draw_character_preview_crop(shop_outfit, 12, 54, 180, 216, 150, 8,
                                                  preview_pose_for(shop_outfit));
             renderer_apply_threshold();
             rlcd_flush(renderer_get_framebuffer());
@@ -1934,7 +1934,7 @@ static void display_task(void *arg)
                                    tr_text(&T_WARDROBE_HOME),
                                    tr_text(&T_SHOP_WEAR),
                                    tr_text(&T_WARDROBE_FOOTER));
-            renderer_draw_character_preview_crop(s_wardrobe_sel, 12, 54, 180, 216, 100, 8,
+            renderer_draw_character_preview_crop(s_wardrobe_sel, 12, 54, 180, 216, 150, 8,
                                                  preview_pose_for(s_wardrobe_sel));
             renderer_apply_threshold();
             rlcd_flush(renderer_get_framebuffer());

@@ -49,9 +49,16 @@ esp_err_t atlas_load(const char *path, atlas_t *atlas)
         return ESP_ERR_NOT_FOUND;
     }
 
-    uint32_t w, h;
-    fread(&w, 4, 1, f);
-    fread(&h, 4, 1, f);
+    uint32_t w = 0, h = 0;
+    if (fread(&w, 4, 1, f) != 1 || fread(&h, 4, 1, f) != 1 ||
+        w == 0 || h == 0 || w % ATLAS_COLS != 0 || h % ATLAS_ROWS != 0 ||
+        w / ATLAS_COLS > ATLAS_MAX_CELL_WIDTH ||
+        h / ATLAS_ROWS > ATLAS_MAX_CELL_HEIGHT) {
+        ESP_LOGE(TAG, "Invalid atlas dimensions: %lux%lu", (unsigned long)w,
+                 (unsigned long)h);
+        fclose(f);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     atlas->atlas_width = (int)w;
     atlas->atlas_height = (int)h;
@@ -82,7 +89,14 @@ esp_err_t atlas_load(const char *path, atlas_t *atlas)
         ESP_LOGI(TAG, "Format: 8-bit raw (%zu KB)", data_bytes / 1024);
     } else if (data_bytes == packed_size) {
         /* 2-bit packed format – unpack into PSRAM buffer */
-        uint8_t *packed = malloc(packed_size);
+        /* The wider gesture-safe atlases have a 230KB packed payload. Keep
+         * this temporary buffer in PSRAM when available so loading an atlas
+         * does not exhaust the internal heap; retain malloc as a fallback for
+         * boards without PSRAM. */
+        bool packed_in_psram = false;
+        uint8_t *packed = heap_caps_malloc(packed_size, MALLOC_CAP_SPIRAM);
+        if (packed) packed_in_psram = true;
+        if (!packed) packed = malloc(packed_size);
         if (!packed) {
             ESP_LOGE(TAG, "Temp alloc failed (%zu bytes)", packed_size);
             heap_caps_free(atlas->data);
@@ -93,7 +107,8 @@ esp_err_t atlas_load(const char *path, atlas_t *atlas)
         size_t rd = fread(packed, 1, packed_size, f);
         if (rd != packed_size) ESP_LOGW(TAG, "Short read (2-bit): %zu/%zu", rd, packed_size);
         unpack_2bit(packed, packed_size, atlas->data, pixel_count);
-        free(packed);
+        if (packed_in_psram) heap_caps_free(packed);
+        else free(packed);
         ESP_LOGI(TAG, "Format: 2-bit packed (%zu KB -> %zu KB unpacked)",
                  data_bytes / 1024, pixel_count / 1024);
     } else {
@@ -114,7 +129,9 @@ esp_err_t atlas_load(const char *path, atlas_t *atlas)
 
 void atlas_extract_pose(const atlas_t *atlas, int index, uint8_t *out)
 {
-    if (!atlas || !atlas->data || index < 0 || index >= POSE_COUNT) {
+    if (!atlas || !atlas->data || !out || index < 0 || index >= POSE_COUNT ||
+        atlas->cell_width <= 0 || atlas->cell_width > ATLAS_MAX_CELL_WIDTH ||
+        atlas->cell_height <= 0 || atlas->cell_height > ATLAS_MAX_CELL_HEIGHT) {
         return;
     }
 

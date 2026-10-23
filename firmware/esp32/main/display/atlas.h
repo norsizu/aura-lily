@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+/* Maximum cell dimensions accepted by the renderer's PSRAM pose buffer. */
+#define ATLAS_MAX_CELL_WIDTH  320
+#define ATLAS_MAX_CELL_HEIGHT 320
+
 typedef struct {
     uint8_t *data;          // 完整 atlas 灰度数据 (PSRAM)
     int atlas_width;        // 总宽度
