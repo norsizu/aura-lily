@@ -22,3 +22,5 @@ firmware/esp32/build-*/
 firmware/esp32/releases/
 firmware/esp32/sdkconfig
 firmware/esp32/sdkconfig.old
+# Local camp workspace (not part of the public tree)
+lily-BuilderHub/

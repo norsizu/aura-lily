@@ -59,6 +59,10 @@ Aura Lily is built around the Waveshare [ESP32-S3-RLCD-4.2 board](https://docs.w
 | Local networking | Two saved Wi-Fi credential slots with real SSID labels and manual switching. |
 | OTA | Dual application partitions, application and asset OTA, SHA-256 verification, and boot rollback. An old single-partition device needs one complete wired flash before its first OTA migration. |
 | Self-hosting | A local admin UI for Hermes, the dialogue model, ASR, TTS, dialogue quota, and an optional Soul. Firmware builds have no baked-in server endpoint. |
+| Emotion chain | Each reply starts from the model's first reaction, then is adjusted by body and stress state and by the inertia of her recent mood; the result drives the dialogue portrait and TTS tone. |
+| World ledger | Every mood, energy, and location change is recorded with before/after values and a reason; after an hour or more away, she can tell you what she has been doing. |
+| Voice settings and background tasks | One sentence changes the sleep timeout and the device confirms it; weather lookups run in the background and she reports back when idle; reminders go into the ledger. |
+| X-Ray screen | Self-hosted read-only screen that replays each turn's emotional reasoning and the day's ledger; see below. |
 
 ## Architecture
 
@@ -124,7 +128,21 @@ AURA_PERSONA_ENABLED=1
 
 Soul starts empty. Add your own through the local admin UI or create `.aura/persona/persona/soul.md`. State and schedules live in the Git-ignored `.aura/` runtime directory.
 
-### 3. Build and flash the device
+### 3. Open the X-Ray screen (optional)
+
+X-Ray is a read-only screen served by your own instance: what she is thinking now, which room she is in, today's mood curve and world ledger, and a replay of how each turn went from first reaction to final mood. It needs the world layer (`AURA_PERSONA_ENABLED=1`) and reads only your local `.aura/` data; it never contacts a project server.
+
+Set a long random token in `.env`:
+
+```bash
+AURA_TRACE_TOKEN=replace-with-a-random-string
+```
+
+Restart the service and open `http://<host-or-ip>:8765/trace?token=<your-token>`. Without a token the route returns 404; a wrong token returns 403.
+
+To show the screen publicly (for example inside your own showcase page), also set `AURA_TRACE_PUBLIC=1`; `/trace/live` then needs no token. **Anyone who can reach that address will see her conversations and state**, so enable it only on purpose.
+
+### 4. Build and flash the device
 
 The repository includes the complete firmware source and device assets. Most users should download the prebuilt full Web-flash image from [Releases](https://github.com/norsizu/aura-lily/releases); developers can build it with the commands below. The Web-flash image targets the Waveshare ESP32-S3-RLCD-4.2. A first wired flash replaces the firmware partitions, so provisioning must be completed again afterwards.
 
@@ -152,7 +170,7 @@ This is one complete merged image, so add only this single file. Do not keep Lau
 
 Set your WebSocket and OTA manifest URLs in `menuconfig > Aura Lily`, or save them from the first-run provisioning page. Use your LAN, Tailscale, or public address instead of `127.0.0.1`.
 
-### 4. Wi-Fi and OTA
+### 5. Wi-Fi and OTA
 
 Successful provisioning retains two Wi-Fi credentials and shows their SSIDs in the device menu. There is no default OTA server. Configure your own HTTPS manifest URL in `menuconfig > Aura Lily`, then use `tools/make_ota_release.py` to create firmware and asset manifests. Upload all artifacts before publishing `manifest.json`.
 

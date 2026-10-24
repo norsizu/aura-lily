@@ -2,6 +2,35 @@
 
 All notable public-release changes are documented here.
 
+## v0.19.0-public - 2026-10-24
+
+### Added
+
+- Emotion chain: each reply starts from the model's first reaction, then is
+  adjusted by body/stress state and the inertia of her recent mood. The
+  result drives the dialogue portrait and the TTS tone.
+- World ledger: every mood, energy, and location change is stored with
+  before/after values and a reason. Day plans keep the reason for each
+  activity, and after an hour or more away she can recap what she did.
+- Voice device settings: one sentence changes the sleep timeout; the device
+  applies it and sends a receipt. The request never reaches the model.
+- Background lookups: weather questions run in the background and the answer
+  comes back once she is idle. Reminders are written to the ledger.
+- Self-hosted X-Ray screen at `/trace?token=...` (set `AURA_TRACE_TOKEN`).
+  An optional token-free `/trace/live` exists only with `AURA_TRACE_PUBLIC=1`.
+
+### Changed
+
+- Outfits use the 320px multi-user atlas set (960x960, 2-bit packed).
+- Dialogue emotion faces are head-only, so they fit every outfit. Sources
+  live in `art/emotion_device/`.
+
+### Upgrading from v0.18.1
+
+- The outfit atlas format changed, so the application and `assets` must be
+  updated together. Flash `aura-lily-v0.19.0-public-full.bin` by wire (for
+  example with ESP LaunchPad), then set up Wi-Fi again.
+
 ## v0.18.1-public - 2026-09-01
 
 ### Fixed
