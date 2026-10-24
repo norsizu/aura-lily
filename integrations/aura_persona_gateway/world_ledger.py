@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 # W1 世界账本：一切状态变化都有出处。
 #
-# 设计约束（见 lily-BuilderHub/DESIGN.md 第 2 节）：
+# 设计约束：
 #   * 不改数据库表结构，流水仍然写进现有的 ``companion_life_event``；
 #   * ``before`` / ``after`` / ``cause`` / ``source`` / ``parent_key`` 全部放
 #     ``payload_json``，老库直接兼容；

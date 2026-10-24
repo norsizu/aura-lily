@@ -1,3 +1,0 @@
-# BuilderHub 演示构建：固定连单机版服务器上的独立实例
-CONFIG_AURA_WS_URI_DEFAULT="wss://aura.inxme.cn/builderhub/ws"
-CONFIG_AURA_WS_URI_PINNED=y
