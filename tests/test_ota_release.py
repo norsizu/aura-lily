@@ -128,7 +128,7 @@ def test_firmware_exposes_eleven_world_scenes_and_professional_outfit():
         "winter", "qipao", "mamian", "hanfu",
     ]
     assert all((scene_dir / f"{name}.bin").stat().st_size == 120008 for name in registered_scenes)
-    assert all((outfit_dir / f"{name}.bin").stat().st_size == 135008 for name in outfit_names)
+    assert all((outfit_dir / f"{name}.bin").stat().st_size == 230408 for name in outfit_names)
     assert not (outfit_dir / "casual_b.bin").exists()
 
 
@@ -159,7 +159,8 @@ def test_outfit_atlas_cells_are_visible_and_bayer_anchor_contract_is_preserved()
     for name in outfit_names:
         data = (FIRMWARE / "assets" / "outfits" / f"{name}.bin").read_bytes()
         width, height = struct.unpack("<II", data[:8])
-        assert (width, height) == (600, 900)
+        # Multi-user 320px set: 3x3 cells of 320x320, 2-bit packed.
+        assert (width, height) == (960, 960)
         packed = data[8:]
         pixels = []
         for value in packed:
@@ -168,8 +169,8 @@ def test_outfit_atlas_cells_are_visible_and_bayer_anchor_contract_is_preserved()
         for pose in range(9):
             row, col = divmod(pose, 3)
             visible = sum(
-                pixels[(row * 300 + y) * width + col * 200 + x] != 0
-                for y in range(300)
-                for x in range(200)
+                pixels[(row * 320 + y) * width + col * 320 + x] != 0
+                for y in range(320)
+                for x in range(320)
             )
             assert visible > 0, f"{name} pose {pose} is empty"
