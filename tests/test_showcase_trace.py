@@ -187,6 +187,45 @@ def test_trace_routes_accept_the_configured_token(tmp_path, monkeypatch):
     assert json.loads(data_body)["ok"] is True
 
 
+# ── 公开只读大屏 /trace/live ─────────────────────────────────
+def test_public_live_routes_are_absent_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("AURA_TRACE_PUBLIC", raising=False)
+    server, thread = _serve(tmp_path, monkeypatch)
+    try:
+        page_status, _ = _get(server, "/trace/live")
+        data_status, _ = _get(server, "/trace/live/data")
+    finally:
+        _stop(server, thread)
+
+    assert page_status == 404
+    assert data_status == 404
+
+
+def test_public_live_routes_need_no_token_and_hide_internals(tmp_path, monkeypatch):
+    _seed_db(tmp_path)
+    monkeypatch.setenv("AURA_TRACE_PUBLIC", "1")
+    server, thread = _serve(tmp_path, monkeypatch)
+    try:
+        page_status, page_body = _get(server, "/trace/live")
+        data_status, data_body = _get(server, "/trace/live/data")
+        # 令牌路由不受公开开关影响，仍然要令牌。
+        locked_status, _ = _get(server, TRACE_DATA_PATH)
+    finally:
+        _stop(server, thread)
+
+    assert page_status == 200
+    assert "<html" in page_body.lower()
+    assert data_status == 200
+    payload = json.loads(data_body)
+    assert payload["ok"] is True
+    assert "db" not in payload
+    assert "scope" not in payload
+    assert "state" in payload and "ledger" in payload
+    assert str(tmp_path) not in data_body
+    assert "unit-trace-token" not in page_body + data_body
+    assert locked_status == 403
+
+
 def test_trace_page_is_self_contained(tmp_path, monkeypatch):
     server, thread = _serve(tmp_path, monkeypatch)
     try:
@@ -252,9 +291,10 @@ def test_trace_data_payload_carries_every_panel(tmp_path):
         assert key in row, key
     assert row["source"]
 
+    # 便签只上用户让她记的；后台查询顺手钉的（agent）是一次性结果，不上墙。
     notes = payload["notes"]
-    assert [note["text"] for note in notes] == ["买牛奶", "带伞"]
-    assert [note["source"] for note in notes] == ["voice", "agent"]
+    assert [note["text"] for note in notes] == ["买牛奶"]
+    assert [note["source"] for note in notes] == ["voice"]
 
     assert payload["why"]["event_keys"] == ["ledger-why-key"]
     assert payload["why"]["question"] == "你为什么不开心"
@@ -283,6 +323,61 @@ def test_trace_data_payload_explains_where_the_emotion_landed(tmp_path):
     for row in payload["ledger"]:
         items = row["change_items"]
         assert [f"{item['label']} {item['before']}→{item['after']}" for item in items] == row["changes"]
+
+
+def test_trace_data_replays_each_round_with_its_own_emotion(tmp_path):
+    from integrations.aura_persona_gateway.emotion_engine import write_emotion_state
+
+    config, store = _seed_db(tmp_path)
+    # 第一轮在情绪历史上线前：只有对话，没有评估链，回看时要留空而不是编一个。
+    store.save_im_message(config.scope, direction="user", body="早上好", message_type="user_text")
+    store.save_im_message(config.scope, direction="aura", body="早呀", message_type="aura_text")
+    rounds = [("没有一个开源", "这确实让人头大<emo:sad>", "sad", "规则兜底：用户沮丧"), ("晚上看电影吧", "好呀！", "happy", "LLM 自评")]
+    for heard, said, emotion, reason in rounds:
+        time.sleep(0.01)
+        store.save_im_message(config.scope, direction="user", body=heard, message_type="user_text")
+        store.save_im_message(config.scope, direction="aura", body=said, message_type="aura_text")
+        state = store.get_or_create_state(config.scope)
+        write_emotion_state(state, emotion=emotion, intensity=3, at=time.time(), resolution={"source": "llm", "raw": emotion, "reason": reason})
+        store.save_state(config.scope, state)
+
+    payload = collect_showcase_trace(config.companion_db_path, now=NOW)
+
+    exchanges = payload["exchanges"]
+    assert [x["heard"] for x in exchanges] == ["早上好", "没有一个开源", "晚上看电影吧"]
+    assert exchanges[0]["emotion"] == {}
+    assert exchanges[1]["said"] == "这确实让人头大"
+    assert exchanges[1]["emotion"]["emotion"] == "sad"
+    assert exchanges[1]["emotion"]["last_resolution"]["reason"] == "规则兜底：用户沮丧"
+    assert exchanges[2]["emotion"]["emotion"] == "happy"
+    # 当前这一轮照旧在 emotion 里，历史滚动保留，不会越攒越多。
+    assert payload["emotion"]["emotion"] == "happy"
+
+
+def test_background_result_replaces_the_ack_in_its_round(tmp_path):
+    config, store = _seed_db(tmp_path)
+    store.save_im_message(config.scope, direction="user", body="查一下明天北京的天气", message_type="user_text")
+    store.save_im_message(config.scope, direction="aura", body="好，我去查，弄完马上告诉你。", message_type="aura_text")
+    time.sleep(0.01)
+    store.save_im_message(config.scope, direction="aura", body="明天北京阴天，8到17度。", message_type="background_task_result")
+
+    payload = collect_showcase_trace(config.companion_db_path, now=NOW)
+
+    for exchange in (payload["exchange"], payload["exchanges"][-1]):
+        assert exchange["said"] == "明天北京阴天，8到17度。"
+        assert exchange["ack"] == "好，我去查，弄完马上告诉你。"
+        assert exchange["background"] is True
+
+
+def test_emotion_history_rolls_over():
+    from integrations.aura_persona_gateway.emotion_engine import EMOTION_HISTORY_KEY, EMOTION_HISTORY_LIMIT, write_emotion_state
+
+    state: dict = {}
+    for index in range(EMOTION_HISTORY_LIMIT + 5):
+        write_emotion_state(state, emotion="happy", intensity=2, at=1000.0 + index)
+    history = state["metadata"][EMOTION_HISTORY_KEY]
+    assert len(history) == EMOTION_HISTORY_LIMIT
+    assert history[-1]["at"] == 1000.0 + EMOTION_HISTORY_LIMIT + 4
 
 
 def test_trace_data_exchange_is_empty_before_any_dialogue(tmp_path):

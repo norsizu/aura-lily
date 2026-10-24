@@ -107,6 +107,13 @@ ADMIN_TOKEN_ENV = "AURA_LILY_ADMIN_TOKEN"
 TRACE_TOKEN_ENV = "AURA_TRACE_TOKEN"
 TRACE_PAGE_PATH = "/trace"
 TRACE_DATA_PATH = "/trace/data"
+# 公开只读大屏（Demo 站嵌入用）：设 AURA_TRACE_PUBLIC=1 才开，不要令牌。
+# 数据去掉库路径和 scope，并按 TRACE_PUBLIC_CACHE_SECONDS 合并请求，护住小内存机器。
+TRACE_PUBLIC_ENV = "AURA_TRACE_PUBLIC"
+TRACE_LIVE_PAGE_PATH = "/trace/live"
+TRACE_LIVE_DATA_PATH = "/trace/live/data"
+TRACE_PUBLIC_CACHE_SECONDS = 2.0
+TRACE_PUBLIC_HIDDEN_KEYS = ("db", "scope")
 LEGACY_ADMIN_TOKEN_ENV = "AURA_PERSONA_ADMIN_TOKEN"
 ADMIN_USER_ENV = "AURA_LILY_ADMIN_USER"
 LEGACY_ADMIN_USER_ENV = "AURA_PERSONA_ADMIN_USER"
@@ -744,6 +751,8 @@ def build_config(args: argparse.Namespace) -> LilyServerConfig:
 
 def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
     runtime = LilyRuntime(config)
+    _public_trace_lock = Lock()
+    _public_trace_cache: dict[str, Any] = {}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "AuraLilyHermes/0.1"
@@ -907,6 +916,15 @@ def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
                 if not self._trace_token_ok():
                     return
                 self._send_json(self._trace_payload(runtime))
+                return
+            if request_path in (TRACE_LIVE_PAGE_PATH, TRACE_LIVE_DATA_PATH):
+                if str(os.environ.get(TRACE_PUBLIC_ENV) or "").strip() != "1":
+                    self._send_json({"ok": False, "error": "not_found"}, status=404)
+                    return
+                if request_path == TRACE_LIVE_PAGE_PATH:
+                    self._send_html(TRACE_PAGE_HTML)
+                else:
+                    self._send_json(self._public_trace_payload(runtime))
                 return
             self._send_json({"ok": False, "error": "not_found"}, status=404)
 
@@ -1114,6 +1132,21 @@ def make_handler(config: LilyServerConfig) -> type[BaseHTTPRequestHandler]:
                 return {"ok": False, "error": exc.__class__.__name__}
             payload["ok"] = True
             return payload
+
+        @staticmethod
+        def _public_trace_payload(runtime: LilyRuntime) -> dict[str, Any]:
+            """公开大屏数据：同 _trace_payload，去掉库路径/scope，短缓存。"""
+            with _public_trace_lock:
+                now = monotonic()
+                cached = _public_trace_cache.get("payload")
+                if cached is not None and now - _public_trace_cache.get("at", 0.0) < TRACE_PUBLIC_CACHE_SECONDS:
+                    return cached
+                payload = Handler._trace_payload(runtime)
+                for key in TRACE_PUBLIC_HIDDEN_KEYS:
+                    payload.pop(key, None)
+                _public_trace_cache["payload"] = payload
+                _public_trace_cache["at"] = now
+                return payload
 
         def _admin_allowed(self) -> bool:
             headers = {key.lower(): value for key, value in self.headers.items()}

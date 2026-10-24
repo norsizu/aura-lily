@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .emotion_engine import EMOTION_LABELS, EMOTION_VOICE_TONES, strip_emotion_tag
-from .pinned_notes import PINNED_NOTES_STATE_KEY, read_pinned_notes
+from .emotion_engine import EMOTION_HISTORY_KEY, EMOTION_LABELS, EMOTION_VOICE_TONES, strip_emotion_tag
+from .pinned_notes import PIN_SOURCE_AGENT, PINNED_NOTES_STATE_KEY, read_pinned_notes
 from .self_why import SELF_WHY_STATE_KEY, read_self_why_state
 from .world_ledger import (
     HIDDEN_DRIVE_FIELDS,
@@ -26,9 +26,12 @@ LEDGER_AND_WORLD_PREFIXES = (LEDGER_EVENT_PREFIX, "world.")
 DRIVE_LABELS = {field: RECAP_FIELD_LABELS.get(field, field) for field in HIDDEN_DRIVE_FIELDS}
 DRIVE_LABELS["drives_snapshot_v1"] = "驱动快照"
 # 大屏账本流水默认只显示最近 15 条，多了投屏上看不清。
-SHOWCASE_LEDGER_LIMIT = 15
+# 大屏账本能往回拖着看，带够几天的量；每条只有几百字节，2 秒一轮也不重。
+SHOWCASE_LEDGER_LIMIT = 160
 # 大屏"她听到 / 她说"取这些消息类型；后台任务结果也算她说的话。
 EXCHANGE_REPLY_TYPES = ("aura_text", "background_task_result")
+# 大屏回看：今天最多带这么多轮对话，每轮配上当时的情绪评估链。
+SHOWCASE_EXCHANGE_LIMIT = 60
 
 
 def as_int(value: Any, default: int = 0) -> int:
@@ -237,6 +240,9 @@ def ledger_row(event: dict[str, Any], *, city: str) -> dict[str, Any]:
         "delta": delta,
         "location": str(event.get("location") or ""),
         "activity": str(event.get("activity") or ""),
+        # 提醒行带上到点时间，大屏把还没到点的提醒画在时间轴上。
+        "fire_at": as_float(payload.get("fire_at")) or None,
+        "action": str(payload.get("action") or ""),
     }
 
 
@@ -339,6 +345,11 @@ def showcase_emotion_row(state: dict[str, Any]) -> dict[str, Any]:
     """``emotion``：当前情绪 + 最近一轮的评估链（LLM 自评→状态调制→惯性）。"""
     row = state_row(state)
     emotion_state = row.get("emotion_state") if isinstance(row.get("emotion_state"), dict) else {}
+    return emotion_payload_row(emotion_state)
+
+
+def emotion_payload_row(emotion_state: dict[str, Any]) -> dict[str, Any]:
+    """一份 ``write_emotion_state`` 写下的情绪 → 大屏要的形状（当前这轮和历史轮共用）。"""
     resolution = emotion_state.get("last_resolution") if isinstance(emotion_state.get("last_resolution"), dict) else {}
     return {
         "emotion": str(emotion_state.get("emotion") or ""),
@@ -400,21 +411,99 @@ def read_last_exchange(conn: sqlite3.Connection, *, platform: str, chat_id: str,
     if heard is None:
         return {}
     placeholders = ",".join("?" for _ in EXCHANGE_REPLY_TYPES)
-    said = conn.execute(
+    replies = conn.execute(
         f"""
-        SELECT body, created_at FROM companion_im_message
+        SELECT body, created_at, message_type FROM companion_im_message
          WHERE platform=? AND chat_id=? AND user_id=? AND direction='aura'
            AND message_type IN ({placeholders}) AND created_at >= ?
-         ORDER BY created_at ASC, id ASC LIMIT 1
+         ORDER BY created_at ASC, id ASC
         """,
         (platform, chat_id, user_id, *EXCHANGE_REPLY_TYPES, as_float(heard[1])),
-    ).fetchone()
-    return {
-        "heard": str(heard[0] or "").strip(),
-        "heard_at": as_float(heard[1]),
-        "said": strip_emotion_tag(str(said[0] or ""))[0].strip() if said else "",
-        "said_at": as_float(said[1]) if said else 0.0,
-    }
+    ).fetchall()
+    exchange = {"heard": str(heard[0] or "").strip(), "heard_at": as_float(heard[1]), "said": "", "said_at": 0.0}
+    for body, created_at, message_type in replies:
+        _apply_exchange_reply(exchange, body, created_at, message_type)
+    return exchange
+
+
+def _apply_exchange_reply(exchange: dict[str, Any], body: Any, created_at: Any, message_type: Any) -> None:
+    """一轮里先回的那句算“她说”；后台查询的结果回来后顶替成“她说”，原来那句“我去查”留在 ack。"""
+    text = strip_emotion_tag(str(body or "").strip())[0].strip()
+    if not text:
+        return
+    if str(message_type or "") == "background_task_result":
+        if exchange["said"] and not exchange.get("ack"):
+            exchange["ack"] = exchange["said"]
+        exchange["said"] = text
+        exchange["said_at"] = as_float(created_at)
+        exchange["background"] = True
+    elif not exchange["said"]:
+        exchange["said"] = text
+        exchange["said_at"] = as_float(created_at)
+
+
+def read_day_exchanges(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    user_id: str,
+    since: float,
+    limit: int = SHOWCASE_EXCHANGE_LIMIT,
+) -> list[dict[str, Any]]:
+    """今天的每一轮"她听到 / 她说"，旧的在前；每句用户原话配它之后她回的第一句。"""
+    placeholders = ",".join("?" for _ in EXCHANGE_REPLY_TYPES)
+    rows = conn.execute(
+        f"""
+        SELECT direction, body, created_at, message_type FROM companion_im_message
+         WHERE platform=? AND chat_id=? AND user_id=? AND created_at >= ?
+           AND (direction='user' OR (direction='aura' AND message_type IN ({placeholders})))
+         ORDER BY created_at ASC, id ASC
+        """,
+        (platform, chat_id, user_id, float(since), *EXCHANGE_REPLY_TYPES),
+    ).fetchall()
+    exchanges: list[dict[str, Any]] = []
+    for direction, body, created_at, message_type in rows:
+        text = str(body or "").strip()
+        if direction == "user":
+            if text:
+                exchanges.append({"heard": text, "heard_at": as_float(created_at), "said": "", "said_at": 0.0})
+        elif exchanges:
+            _apply_exchange_reply(exchanges[-1], body, created_at, message_type)
+    return exchanges[-limit:]
+
+
+def attach_exchange_emotions(
+    exchanges: list[dict[str, Any]],
+    state: dict[str, Any],
+    ledger_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """每轮对话配上那一轮写下的情绪（``emotion_history``）；没有记录的轮次留空，不编。"""
+    metadata = state.get("metadata") if state and isinstance(state.get("metadata"), dict) else {}
+    history = metadata.get(EMOTION_HISTORY_KEY) if isinstance(metadata.get(EMOTION_HISTORY_KEY), list) else []
+    current = metadata.get("emotion_state") if isinstance(metadata.get("emotion_state"), dict) else None
+    # 历史是新加的：上线前那一轮只在 emotion_state 里，也算进来。
+    if current and all(as_float(item.get("at")) != as_float(current.get("at")) for item in history if isinstance(item, dict)):
+        history = [*history, current]
+    entries = sorted(
+        (item for item in history if isinstance(item, dict) and as_float(item.get("at"))),
+        key=lambda item: as_float(item.get("at")),
+    )
+    # 情绪是她回完话才写的，所以归给它之前最近听到的那一句；一轮只取第一份。
+    for exchange in exchanges:
+        exchange["emotion"] = {}
+    for item in entries:
+        at = as_float(item.get("at"))
+        owner = None
+        for exchange in exchanges:
+            if as_float(exchange.get("heard_at")) <= at:
+                owner = exchange
+        if owner is None or owner["emotion"]:
+            continue
+        emotion = emotion_payload_row(item)
+        emotion["effects"] = emotion_effects(emotion, ledger_rows)
+        owner["emotion"] = emotion
+    return exchanges
 
 
 def place_from_world_state(world_state: Any, *, since: Any = 0.0) -> dict[str, Any]:
@@ -470,8 +559,11 @@ def emotion_effects(emotion_row: dict[str, Any], ledger_rows: list[dict[str, Any
 
 
 def showcase_notes_row(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """``notes``：X3 钉在信息板上的便签，新的在前。"""
-    return read_pinned_notes(state)
+    """``notes``：X3 钉在信息板上的便签，新的在前。
+
+    便签只放用户让她记的事；后台查询顺手钉上的结果是一次性的，不上大屏。
+    """
+    return [note for note in read_pinned_notes(state) if note.get("source") != PIN_SOURCE_AGENT]
 
 
 def showcase_why_row(state: dict[str, Any]) -> dict[str, Any]:
@@ -520,6 +612,8 @@ def collect_showcase_trace(
             limit=ledger_limit,
         )
         exchange = read_last_exchange(conn, platform=platform, chat_id=chat_id, user_id=user_id)
+        midnight = dt.datetime.fromtimestamp(stamp).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        exchanges = read_day_exchanges(conn, platform=platform, chat_id=chat_id, user_id=user_id, since=midnight)
         place = current_place(state) or read_current_place(conn, platform=platform, chat_id=chat_id, user_id=user_id)
         city = ""
         for item in plan:
@@ -548,6 +642,7 @@ def collect_showcase_trace(
         "emotion_labels": dict(EMOTION_LABELS),
         "field_labels": dict(RECAP_FIELD_LABELS),
         "exchange": exchange,
+        "exchanges": attach_exchange_emotions(exchanges, state, ledger_rows),
         "place": place,
         "ledger": ledger_rows,
         "plan": plan_rows,
@@ -591,6 +686,9 @@ __all__ = [
     "place_from_world_state",
     "read_current_place",
     "read_last_exchange",
+    "read_day_exchanges",
+    "attach_exchange_emotions",
+    "emotion_payload_row",
     "read_ledger",
     "read_plan",
     "read_recent_ledger",
