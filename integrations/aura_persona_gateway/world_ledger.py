@@ -19,6 +19,11 @@ SNAPSHOT_FIELDS = TRACKED_FIELDS + ("coins",)
 LEDGER_EVENT_PREFIX = "ledger."
 # X3 的便签钉上/清空也走账本（source="note"），数值不变，只为留一行可追溯记录。
 LEDGER_SOURCE_NOTE = "note"
+# 金币收支（打工、买衣服、买甜品）。余额以服务端为准，每一笔都要能在账本里查到。
+LEDGER_SOURCE_WALLET = "wallet"
+# 语音提醒定下/到点/取消也记一行，数值不变；提醒本身只活在网关进程内存里，
+# 不进账本的话 X1 大屏完全看不到。
+LEDGER_SOURCE_REMINDER = "reminder"
 LEDGER_SOURCES = (
     "world_clock",
     "hunger_drive",
@@ -28,6 +33,8 @@ LEDGER_SOURCES = (
     "emotion",
     "interaction",
     LEDGER_SOURCE_NOTE,
+    LEDGER_SOURCE_WALLET,
+    LEDGER_SOURCE_REMINDER,
 )
 # 离线回顾里给用户看的中文字段名（W3）。
 RECAP_FIELD_LABELS = {
@@ -36,7 +43,7 @@ RECAP_FIELD_LABELS = {
     "satiety": "饱腹",
     "stress": "压力",
     "trust": "信任",
-    "beans": "金豆",
+    "beans": "金币",
     "affinity_xp": "好感",
     "social_need": "社交",
     "curiosity": "好奇",
@@ -251,6 +258,65 @@ def record_state_change(
         # 会把这段差额重复记一遍。
         note_drive_baseline(after.get("metadata"), snapshot_state(after))
     return summary
+
+
+REMINDER_LEDGER_TITLES = {
+    "set": "定了提醒",
+    "fire": "到点提醒",
+    "cancel": "取消了提醒",
+    "drop": "提醒没送到",
+}
+
+
+def record_reminder_ledger(
+    store: Any,
+    scope: Any,
+    *,
+    action: str,
+    label: str = "",
+    fire_at: float | None = None,
+    reminder_id: str = "",
+    at: float | None = None,
+) -> str | None:
+    """提醒的每一步留一行账本（不改任何数值），返回 event_key。"""
+    if not hasattr(store, "record_life_event"):
+        return None
+    stamp = float(at if at is not None else time.time())
+    title = REMINDER_LEDGER_TITLES.get(action, "提醒")
+    label = str(label or "").strip()
+    when = time.strftime("%H:%M", time.localtime(fire_at)) if fire_at else ""
+    if action == "set":
+        cause = f"你让她{when}提醒你：{label}" if when else f"你让她提醒你：{label}"
+    elif action == "fire":
+        cause = f"到点了，她提醒你：{label}"
+    elif action == "cancel":
+        cause = "你让她把定好的提醒都取消了"
+    else:
+        cause = f"设备一直没连上，这条提醒没能播出去：{label}"
+    event_key = f"reminder:{action}:{reminder_id or int(stamp * 1000)}"
+    store.record_life_event(
+        scope,
+        event_type=f"{LEDGER_EVENT_PREFIX}{LEDGER_SOURCE_REMINDER}",
+        title=f"{title}：{label}" if label else title,
+        description=cause,
+        visibility="public",
+        intensity=0,
+        delta={},
+        payload={
+            "before": {},
+            "after": {},
+            "delta": {},
+            "cause": cause,
+            "source": LEDGER_SOURCE_REMINDER,
+            "action": action,
+            "label": label,
+            "fire_at": float(fire_at) if fire_at else None,
+            "reminder_id": reminder_id,
+            "at": stamp,
+        },
+        event_key=event_key,
+    )
+    return event_key
 
 
 def ledger_event_types(sources: Iterable[str] | None = None) -> tuple[str, ...]:

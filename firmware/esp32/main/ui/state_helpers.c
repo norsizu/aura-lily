@@ -5,12 +5,49 @@
 #include "freertos/portmacro.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "nvs.h"
 
 static portMUX_TYPE s_ui_state_mux = portMUX_INITIALIZER_UNLOCKED;
-#define INFO_BOARD_IDLE_DELAY_MS (5LL * 60LL * 1000LL)
+/* 休眠屏（信息板）延迟：默认 5 分钟，语音 set_sleep_timeout 可改为 1–120 分钟，存 NVS 重启保留。 */
+#define INFO_BOARD_IDLE_DEFAULT_MIN 5
+#define INFO_BOARD_IDLE_MIN_MIN 1
+#define INFO_BOARD_IDLE_MAX_MIN 120
+static volatile uint32_t s_info_board_idle_min = INFO_BOARD_IDLE_DEFAULT_MIN;
 /* E4：待机/睡眠超过 10 分钟没有新对话时，情绪回到平静（不新开定时器，
  * 直接搭在 aura_ui_display_tick 已有的空闲计时上）。 */
 #define EMOTION_IDLE_CALM_MS (10LL * 60LL * 1000LL)
+
+void aura_ui_load_idle_minutes(void)
+{
+    nvs_handle_t nvs = 0;
+    uint16_t minutes = 0;
+    if (nvs_open("companion", NVS_READONLY, &nvs) != ESP_OK) return;
+    if (nvs_get_u16(nvs, "idle_min", &minutes) == ESP_OK &&
+        minutes >= INFO_BOARD_IDLE_MIN_MIN && minutes <= INFO_BOARD_IDLE_MAX_MIN) {
+        s_info_board_idle_min = minutes;
+    }
+    nvs_close(nvs);
+}
+
+uint32_t aura_ui_idle_minutes(void)
+{
+    return s_info_board_idle_min;
+}
+
+esp_err_t aura_ui_set_idle_minutes(uint32_t minutes)
+{
+    if (minutes < INFO_BOARD_IDLE_MIN_MIN || minutes > INFO_BOARD_IDLE_MAX_MIN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t nvs = 0;
+    esp_err_t err = nvs_open("companion", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u16(nvs, "idle_min", (uint16_t)minutes);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (err == ESP_OK) s_info_board_idle_min = minutes;
+    return err;
+}
 
 static void copy_text(char *dst, size_t dst_size, const char *src)
 {
@@ -308,7 +345,7 @@ bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snap
             g_state.idle_since_ms = now_ms;
         }
         if (!g_state.info_board_visible &&
-            now_ms - g_state.idle_since_ms >= INFO_BOARD_IDLE_DELAY_MS) {
+            now_ms - g_state.idle_since_ms >= (int64_t)s_info_board_idle_min * 60LL * 1000LL) {
             g_state.info_board_visible = true;
             g_state.dirty = true;
             board_became_visible = true;
@@ -332,7 +369,7 @@ bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snap
     portEXIT_CRITICAL(&s_ui_state_mux);
 
     if (board_became_visible) {
-        ESP_LOGI("ui", "Idle settled for 5 minutes -> information board");
+        ESP_LOGI("ui", "Idle settled for %u minutes -> information board", (unsigned)s_info_board_idle_min);
     }
     return should_draw;
 }

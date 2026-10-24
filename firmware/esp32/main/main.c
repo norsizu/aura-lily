@@ -251,7 +251,7 @@ static const i18n_text_t T_OTA_FAILED             = {{ "更新失败，请稍后
 static const i18n_text_t T_OTA_BUSY               = {{ "更新正在进行", "Update in progress", "更新中です" }};
 
 static const i18n_text_t T_SHOP_TITLE      = {{ "服装商店", "Shop", "お店" }};
-static const i18n_text_t T_SHOP_CURRENCY   = {{ "豆", "pt", "pt" }};
+static const i18n_text_t T_SHOP_CURRENCY   = {{ "金币", "coins", "コイン" }};
 static const i18n_text_t T_SHOP_OWNED      = {{ "已拥有", "Owned", "所持" }};
 static const i18n_text_t T_SHOP_NEW        = {{ "新品", "New", "新作" }};
 static const i18n_text_t T_SHOP_PRICE      = {{ "价格", "Price", "価格" }};
@@ -2879,6 +2879,9 @@ static void input_task(void *arg)
                         if (g_state.coins >= price) {
                             g_state.coins -= price;
                             g_state.outfit_unlocked |= (1u << outfit_idx);
+                            /* 金币以服务端为准：同一笔回传扣款，否则下次 status_update 会把余额改回去。 */
+                            ws_client_send_outfit_purchase(outfit_idx, price,
+                                                           renderer_get_outfit_name(outfit_idx));
                             s_shop_open = false;
                             s_curtain_target = outfit_idx;
                             s_curtain_tick   = 1;
@@ -3787,6 +3790,7 @@ void app_main(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+    aura_ui_load_idle_minutes();
 
     // I2C 总线
     ESP_ERROR_CHECK(i2c_bus_init());

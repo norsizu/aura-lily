@@ -96,7 +96,7 @@ def test_build_offline_recap_formats_time_title_and_effects(tmp_path):
         assert line.startswith(_hhmm(time.time())[:2]) or line[:2].isdigit()
         assert ":" in line[:3]
     assert "在公园散了步（心情+5，体力-7）" in recap[0]
-    assert "吃了顿饭（饱腹+12，金豆-20）" in recap[1]
+    assert "吃了顿饭（饱腹+12，金币-20）" in recap[1]
 
 
 def test_recap_only_covers_events_inside_the_window(tmp_path):

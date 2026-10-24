@@ -9,7 +9,8 @@ def test_idle_board_waits_five_minutes_and_only_draws_when_settled():
     state = (FIRMWARE / "ui" / "state_helpers.c").read_text(encoding="utf-8")
     renderer = (FIRMWARE / "display" / "renderer.c").read_text(encoding="utf-8")
 
-    assert "5LL * 60LL * 1000LL" in state
+    assert "#define INFO_BOARD_IDLE_DEFAULT_MIN 5" in state
+    assert "(int64_t)s_info_board_idle_min * 60LL * 1000LL" in state
     assert "g_state.ui_mode == AURA_UI_IDLE" in state
     assert "g_state.dialogue_ticks_left <= 0" in state
     assert "!g_state.agent_panel_visible" in state
@@ -75,3 +76,16 @@ def test_idle_board_uses_live_weather_and_notes_with_safe_empty_state():
     assert "state->weather_valid && state->weather_city[0] ? state->weather_city : \"--\"" in panel
     assert 'cJSON_GetObjectItem(payload, "notes")' in websocket
     assert "state->info_notes[i]" in panel
+
+
+def test_idle_board_minutes_are_set_by_voice_action_and_persisted():
+    state = (FIRMWARE / "ui" / "state_helpers.c").read_text(encoding="utf-8")
+    websocket = (FIRMWARE / "network" / "ws_client.c").read_text(encoding="utf-8")
+    main = (FIRMWARE / "main.c").read_text(encoding="utf-8")
+
+    assert 'nvs_set_u16(nvs, "idle_min"' in state
+    assert "aura_ui_load_idle_minutes();" in main
+    assert 'cJSON_AddBoolToObject(caps, "set_sleep_timeout", true);' in websocket
+    assert 'strcmp(mtype, "action") == 0' in websocket
+    assert '"sleep_timeout_set"' in websocket
+    assert '"action_result"' in websocket

@@ -48,4 +48,5 @@ esp_err_t ws_client_send_button(button_event_t evt);
 esp_err_t ws_client_send_gpio_diag(int pin, int old_level, int new_level);
 esp_err_t ws_client_send_gpio_snapshot(const char *label, int key_level, int boot_level);
 esp_err_t ws_client_send_dessert_purchase(const char *item_id, int beans);
+esp_err_t ws_client_send_outfit_purchase(int outfit_idx, int price, const char *name);
 bool ws_client_dessert_purchase_pending(void);

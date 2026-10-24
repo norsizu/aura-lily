@@ -8,11 +8,12 @@ from enum import Enum
 from typing import Any
 
 from .city_names import normalize_city_name
+from .query_context import is_weather_question
 from .pinned_notes import note_command_reply, parse_note_command
 from .reminders import parse_reminder_request
 from .runtime import AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
 from .self_why import is_self_why_question
-from .time_context import current_time_snapshot, current_time_spoken_reply
+from .time_context import current_time_snapshot, current_time_spoken_reply, spoken_time_text
 
 
 class VoiceTurnVerdict(str, Enum):
@@ -91,9 +92,68 @@ FUTURE_TIME_RE = re.compile(
 )
 
 
+# 语音改休眠时间：网关拿到转写后直接给设备发 set_sleep_timeout，等固件回执再报结果，
+# 回执没到就不说“改好了”。和多人版 Passport 用同一套句式。
+_SLEEP_VERBS = (
+    r"(?:改到|改成|改为|调到|调成|调为|设为|设成|设置为|设置成|调整到|调整成|调整为|变更到|变更成|变更为"
+    r"|改|调|设|设置|调整|变更)"
+)
+SLEEP_TIMEOUT_RE = re.compile(
+    r"(?:休眠|睡眠|待机|自动休眠).{0,10}" + _SLEEP_VERBS + r".{0,10}?"
+    r"(?P<n1>\d{1,3}|[零一二两三四五六七八九十百]+)\s*(?:分钟|分)"
+    r"|" + _SLEEP_VERBS + r".{0,10}(?:休眠|睡眠|待机|自动休眠).{0,10}?"
+    r"(?P<n2>\d{1,3}|[零一二两三四五六七八九十百]+)\s*(?:分钟|分)"
+)
+SLEEP_TIMEOUT_HYPOTHETICAL_RE = re.compile(r"如果|假如|不要|别把|不用|能不能设置|怎么设置|如何设置|[“”「」]")
+SLEEP_TIMEOUT_MIN_MINUTES = 1
+SLEEP_TIMEOUT_MAX_MINUTES = 120
+
+
+def _chinese_number(text: str) -> int:
+    if text.isdigit():
+        return int(text)
+    digits = dict(zip("零一二两三四五六七八九", (0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
+    total = current = 0
+    for char in text:
+        if char in digits:
+            current = digits[char]
+        elif char in "十百":
+            total += (current or 1) * (10 if char == "十" else 100)
+            current = 0
+    return total + current
+
+
+def parse_sleep_timeout_request(text: str) -> int | None:
+    """“休眠时间调到1分钟” → 1；不是改休眠的句子返回 None（越界的数照样返回，交给调用方报范围）。"""
+    raw = str(text or "")
+    if SLEEP_TIMEOUT_HYPOTHETICAL_RE.search(raw):
+        return None
+    match = SLEEP_TIMEOUT_RE.search(raw)
+    if not match:
+        return None
+    return _chinese_number(match.group("n1") or match.group("n2") or "")
+
+
+def sleep_timeout_receipt_reply(minutes: int, receipt: dict[str, Any]) -> str:
+    status = str(receipt.get("status") or "")
+    code = str(receipt.get("code") or "")
+    if status == "ok":
+        return f"休眠时间已改为{minutes}分钟，重启也会记住。"
+    if code == "invalid_sleep_timeout":
+        return "休眠时间需要设置为1到120分钟。"
+    if code == "sleep_timeout_save_failed":
+        return "休眠时间没有保存成功，请稍后再试。"
+    if status == "timeout":
+        return "设备没回我确认，我不能说休眠时间已经改好了。"
+    return "当前固件还不支持这项操作，所以我不能说已经完成。"
+
+
 def _weather_needs_forecast(raw: str, route: str) -> bool:
     """天气类问题指向非当前时段时返回 True（本地实况缓存答不了，要联网查预报）。"""
     value = str(raw or "")
+    if route not in {"weather", "weather_advice", "time_weather"} and not is_weather_question(PUNCT_RE.sub("", value).lower(), value):
+        # “今晚有点冷，我好像感冒了”是在聊天，不是要查预报。
+        return False
     if "天气预报" in value:
         return True
     is_weather = route in {"weather", "weather_advice", "time_weather"} or bool(WEATHER_TOPIC_RE.search(value))
@@ -241,6 +301,28 @@ def execute_voice_turn(
             route=route,
             mode=runtime.fast_reply_mode,
             extra_debug={"current_time_weather": time_weather_debug},
+        )
+    if route == "device_setting":
+        # 带分钟数的“改休眠”网关会先截走发给设备等回执；还走到这里说明这台设备没接上这条路，照实说。
+        if parse_sleep_timeout_request(raw) is not None:
+            return _result(
+                VoiceTurnVerdict.SPEAK_NOW,
+                started,
+                "device_setting_unsupported",
+                speak="当前固件还不支持这项操作，所以我不能说已经完成。",
+                emotion="calm",
+                route=route,
+                mode=runtime.fast_reply_mode,
+            )
+        return _result(
+            VoiceTurnVerdict.CLARIFY_NOW,
+            started,
+            "device_setting_minutes_missing",
+            speak="休眠时间要改成几分钟？说一个1到120之间的数就行。",
+            emotion="curious",
+            route=route,
+            continue_listening=True,
+            mode=runtime.fast_reply_mode,
         )
     if route == "time":
         time_reply, time_debug = _time_reply(route_context)
@@ -528,7 +610,9 @@ def _time_reply(context: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     subject = str(context.get("subject_entity") or "").strip()
     city = str(context.get("target_location") or "").strip()
     timezone = str(context.get("timezone") or "").strip()
+    focus = str(context.get("time_focus") or "").strip()
     debug = {
+        "time_focus": focus,
         "status": snapshot.get("status") if snapshot else "generated",
         "city": snapshot.get("city") if snapshot else "",
         "timezone": snapshot.get("timezone") if snapshot else "",
@@ -541,19 +625,19 @@ def _time_reply(context: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if snapshot.get("display"):
         city = str(snapshot.get("city") or "").strip()
         prefix = "我这边" if subject == "aura" else (f"{city}" if city else "你那边")
-        return f"{prefix}现在是{snapshot['display']}。", debug
+        return f"{prefix}{spoken_time_text(snapshot, focus)}。", debug
     if subject == "user":
         if not (city or timezone):
             return "我现在还不知道你所在地，没法准确报当地时间。", debug
         snapshot = current_time_snapshot(city=city, timezone_name=timezone)
         debug.update({"city": snapshot.get("city"), "timezone": snapshot.get("timezone"), "status": "generated"})
         prefix = f"{city}" if city else "你那边"
-        return f"{prefix}现在是{snapshot['display']}。", debug
+        return f"{prefix}{spoken_time_text(snapshot, focus)}。", debug
     if subject == "aura":
         snapshot = current_time_snapshot(city=city)
         debug.update({"city": snapshot.get("city"), "timezone": snapshot.get("timezone"), "status": "generated"})
-        return f"我这边现在是{snapshot['display']}。", debug
-    return current_time_spoken_reply(), debug
+        return f"我这边{spoken_time_text(snapshot, focus)}。", debug
+    return current_time_spoken_reply(focus=focus), debug
 
 
 def _time_weather_reply(runtime: AuraRuntimeConfig, context: dict[str, Any]) -> tuple[str, dict[str, Any]]:

@@ -90,6 +90,8 @@ EMOTION_TAG_INSTRUCTION = (
 
 # 上一轮情绪进提示词的那一行（E3）。
 EMOTION_STATE_KEY = "emotion_state"
+EMOTION_HISTORY_KEY = "emotion_history"
+EMOTION_HISTORY_LIMIT = 48
 
 
 def normalize_emotion(value: Any) -> str:
@@ -456,6 +458,11 @@ def write_emotion_state(
             "reason": str(resolution.get("reason") or ""),
         }
     metadata[EMOTION_STATE_KEY] = payload
+    # 大屏点账本回看某一轮的思考过程：留最近若干轮，旧的滚掉。
+    history = metadata.get(EMOTION_HISTORY_KEY)
+    history = [item for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+    history.append(dict(payload))
+    metadata[EMOTION_HISTORY_KEY] = history[-EMOTION_HISTORY_LIMIT:]
     return state
 
 

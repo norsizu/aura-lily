@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
+#include "esp_err.h"
 #include "renderer.h"
 
 void aura_ui_mark_dirty(void);
@@ -16,5 +18,8 @@ void aura_ui_set_agent_panel(bool visible, int progress,
 void aura_ui_set_agent_visible(bool visible);
 void aura_ui_set_ws_connected(bool connected);
 void aura_ui_reset_idle_surface(void);
+void aura_ui_load_idle_minutes(void);
+uint32_t aura_ui_idle_minutes(void);
+esp_err_t aura_ui_set_idle_minutes(uint32_t minutes);
 bool aura_ui_display_tick(bool hold_dialogue, int page_ticks, aura_state_t *snapshot);
 bool aura_ui_copy_and_clear_dirty(aura_state_t *snapshot);

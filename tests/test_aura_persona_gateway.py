@@ -1071,6 +1071,26 @@ def test_voice_turn_returns_current_time_without_model(tmp_path):
     assert result.speak_text == "我现在还不知道你所在地，没法准确报当地时间。"
 
 
+def test_voice_turn_sleep_setting_is_not_time_query(tmp_path):
+    runtime = AuraRuntimeConfig(
+        persona_home=str(tmp_path / "persona-home"),
+        fast_reply_enabled=False,
+        fast_reply_mode="hermes_main",
+    )
+    expected = {
+        "把休眠的时间调成十分钟": "device_setting_unsupported",
+        "休眠时间改长一点": "device_setting_minutes_missing",
+        "待机时间能设成多久": "device_setting_minutes_missing",
+    }
+    for text, path in expected.items():
+        fastpath = resolve_query_context(text, aura_home_city="长沙", user_home_city="上海").to_dict()
+        assert fastpath["intent"] == "device_setting", text
+        result = execute_voice_turn(text, fastpath=fastpath, runtime_config=runtime)
+        assert result.debug["decision_path"] == path, text
+        assert "已改" not in result.speak_text
+    assert resolve_query_context("现在什么时间", aura_home_city="长沙", user_home_city="上海").intent == "time"
+
+
 def test_voice_turn_answers_mood_from_state_without_model(tmp_path):
     runtime = AuraRuntimeConfig(
         persona_home=str(tmp_path / "persona-home"),
@@ -6557,3 +6577,59 @@ def test_http_persona_config_requires_admin_login(tmp_path, monkeypatch):
     finally:
         server.shutdown()
         thread.join(timeout=3)
+
+
+def test_time_fastpath_only_takes_clear_time_questions_and_answers_the_asked_part(tmp_path):
+    runtime = AuraRuntimeConfig(
+        persona_home=str(tmp_path / "persona-home"),
+        fast_reply_enabled=False,
+        fast_reply_mode="hermes_main",
+    )
+    expected = {
+        "现在几点了": ("time", "time"),
+        "今天几号": ("time", "date"),
+        "今天星期几": ("time", "weekday"),
+        "现在几点，今天几号": ("time", "both"),
+        "你有时间吗": ("chat", ""),
+        "时间过得好快": ("chat", ""),
+        "把闹钟改到七点": ("chat", ""),
+        "把休眠的时间调成十分钟": ("device_setting", ""),
+    }
+    for text, (intent, focus) in expected.items():
+        context = resolve_query_context(text, aura_home_city="长沙", user_home_city="上海")
+        assert (context.intent, context.time_focus) == (intent, focus), text
+
+    def speak(text):
+        fastpath = resolve_query_context(text, aura_home_city="长沙", user_home_city="上海").to_dict()
+        return execute_voice_turn(text, fastpath=fastpath, runtime_config=runtime).speak_text
+
+    clock = speak("现在几点了")
+    assert "点" in clock and "年" not in clock and "星期" not in clock
+    date = speak("今天几号")
+    assert "年" in date and "月" in date and "日" in date and "点" not in date
+    assert "点" in speak("现在几点，今天几号") and "年" in speak("现在几点，今天几号")
+
+
+def test_persona_turn_sleep_setting_never_reaches_the_model(tmp_path):
+    # 线上事故：模型顺口答"设置已经帮你改好了"，实际上休眠时间写死在固件里。
+    class FakeBridge:
+        config = HermesLilyConfig(command=("hermes",))
+
+        def run(self, goal, *, metadata=None):
+            return HermesLilyResult(ok=True, status="completed", response="好哒，设置已经帮你改好了。", request_id="m", latency_ms=1, evidence={})
+
+    config = _config(tmp_path)
+    store = LilyPersonaStore(config.companion_db_path)
+    runtime = AuraRuntimeConfig(
+        persona_home=config.persona_home,
+        fast_reply_enabled=True,
+        fast_reply_mode="hermes_main",
+        aura_model_mode="aura_model",
+    )
+    gateway = AuraPersonaGateway(config=config, store=store, bridge=FakeBridge(), runtime_config=runtime)
+
+    result = gateway.run_turn("把休眠时间改成 1 分钟")
+
+    # 网关没截走（设备没回执）时照实说不支持，绝不能让模型说“改好了”。
+    assert "改好了" not in result.response
+    assert "不能说已经完成" in result.response

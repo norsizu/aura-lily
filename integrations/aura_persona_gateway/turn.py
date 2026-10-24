@@ -256,6 +256,9 @@ def _context_with_conversation_language(context: PersonaContext, language: str) 
     )
 
 
+AUTO_PIN_AGENT_NOTES = False
+
+
 @dataclass(frozen=True)
 class PersonaTurnResult:
     ok: bool
@@ -1436,6 +1439,9 @@ class AuraPersonaGateway:
             # 不进模型（模型会把"贴好了"讲成一段话）。
             "note_pin",
             "note_clear",
+            # 设备设置（休眠时间等）：没拿到设备回执就必须照实说，模型会顺口答"改好了"。
+            "device_setting_unsupported",
+            "device_setting_minutes_missing",
         }:
             return True
         if decision_path in {"supportive_chat"}:
@@ -2023,8 +2029,10 @@ class AuraPersonaGateway:
         status = "sent" if result.ok else "failed"
         # X3 来源 b：任务结果顺手钉一条便签，不用再喊一次"记在便签上"。
         # 放在消息落库之前，钉没钉成都能记进这条消息的 metadata 里对账。
+        # 便签只放用户要她记下的事和还没到点的提醒；查天气/搜资料这类结果
+        # 说完就算用完了，不再自动钉到信息板上（AUTO_PIN_AGENT_NOTES 留着开关）。
         note_facts: dict[str, Any] | None = None
-        if result.ok:
+        if result.ok and AUTO_PIN_AGENT_NOTES:
             try:
                 note_facts = self._auto_pin_agent_note(
                     task=task,

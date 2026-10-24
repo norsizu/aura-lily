@@ -56,4 +56,30 @@ def test_gateway_dessert_purchase_persists_state_and_life_event(tmp_path, monkey
     assert result["ok"] is True
     assert result["beans"] == 42
     assert state["beans"] == 42
-    assert store.list_recent_life_events(config.scope, event_prefix="companion.dessert", limit=1)
+    # 金币收支统一写入世界账本的 wallet 源，X-Ray 大屏据此展示。
+    assert store.list_recent_life_events(config.scope, event_prefix="ledger.wallet", limit=1)
+
+
+def test_gateway_outfit_purchase_spends_server_beans(tmp_path, monkeypatch):
+    config = PersonaGatewayConfig(
+        enabled=True,
+        persona_home=str(tmp_path / "persona"),
+        companion_home=str(tmp_path / "companion"),
+    )
+    store = LilyPersonaStore(config.companion_db_path)
+    store.get_or_create_state(config.scope)
+    monkeypatch.setattr(gateway, "load_persona_config", lambda: config)
+    monkeypatch.setattr(gateway, "LilyPersonaStore", LilyPersonaStore)
+
+    result = gateway.handle_outfit_purchase({"outfit": 3, "price": 30, "name": "旗袍"})
+    state = store.get_or_create_state(config.scope)
+
+    assert result["ok"] is True
+    assert state["beans"] == result["beans"] == 20
+    events = store.list_recent_life_events(config.scope, event_prefix="ledger.wallet", limit=1)
+    assert events and "旗袍" in str(events[0])
+    assert gateway.companion_status_fields().get("beans", 20) == 20
+
+    rejected = gateway.handle_outfit_purchase({"outfit": 3, "price": 999, "name": "旗袍"})
+    assert rejected["ok"] is False
+    assert store.get_or_create_state(config.scope)["beans"] == 20

@@ -1126,3 +1126,27 @@ def test_scene_prompt_renders_at_most_three_objects_with_details():
     assert "每天早上擦一遍" in text
     assert "西窗" not in text  # 第 4 件不渲染
     assert "附近物品=" in text
+
+
+def test_reminder_ledger_rows_reach_the_trace_page(tmp_path):
+    import sqlite3
+
+    from integrations.aura_persona_gateway.trace_data import ledger_row, read_recent_ledger
+    from integrations.aura_persona_gateway.world_ledger import record_reminder_ledger
+
+    config = _config(tmp_path)
+    store = LilyPersonaStore(config.companion_db_path)
+    now = time.time()
+    record_reminder_ledger(store, config.scope, action="set", label="去散步", fire_at=now + 600, reminder_id="r1", at=now)
+    record_reminder_ledger(store, config.scope, action="fire", label="去散步", fire_at=now + 600, reminder_id="r1", at=now + 600)
+
+    scope = config.scope
+    platform, chat_id, user_id = scope.platform, scope.chat_id, scope.user_id
+    with sqlite3.connect(config.companion_db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [ledger_row(item, city="上海") for item in read_recent_ledger(conn, platform=platform, chat_id=chat_id, user_id=user_id)]
+
+    reminder_rows = [row for row in rows if row["source"] == "reminder"]
+    assert [row["action"] for row in reminder_rows] == ["fire", "set"]  # 新的在前
+    assert reminder_rows[1]["title"] == "定了提醒：去散步"
+    assert abs(reminder_rows[1]["fire_at"] - (now + 600)) < 1

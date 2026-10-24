@@ -10227,3 +10227,41 @@ def test_voice_reminder_cancel_all(monkeypatch):
         await asyncio.sleep(0)
 
     asyncio.run(scenario())
+
+
+def test_gateway_background_result_survives_next_turn_and_waits_for_idle(monkeypatch):
+    # 连续对话：说完"我去查"设备马上开下一轮录音（还录空了），结果回来仍要播报，且等那一轮结束再播。
+    from integrations.hermes_lily_cli import gateway as gw
+
+    polls = iter([{"status": "pending"}, {"ok": True, "status": "done", "body": "北京明天多云 8-17 度"}])
+    spoken: list[tuple[str, bool]] = []
+    sent: list[dict] = []
+
+    async def fake_send_json(_ws, payload):
+        sent.append(payload)
+
+    async def fake_send_dialogue_and_tts(_ws, _runtime, state, text, **_kwargs):
+        spoken.append((text, gw.device_turn_busy(state)))
+
+    monkeypatch.setattr(gw, "fetch_background_task_result", lambda _config, _task: next(polls))
+    monkeypatch.setattr(gw, "send_json", fake_send_json)
+    monkeypatch.setattr(gw, "send_dialogue_and_tts", fake_send_dialogue_and_tts)
+    monkeypatch.setattr(gw, "companion_record_beans", lambda *a, **k: None)
+    monkeypatch.setattr(gw, "companion_apply_work_energy_cost", lambda *_a: 0)
+    monkeypatch.setattr(gw, "start_status_update_task", lambda *_a: None)
+    monkeypatch.setattr(gw, "BACKGROUND_POLL_INTERVAL_SECONDS", 0.01)
+
+    async def scenario():
+        state = gw.TurnState()
+        task = gw.start_background_result_task(object(), gw.GatewayConfig(host="127.0.0.1", port=0, bridge_url="http://127.0.0.1:1/turn"), None, state, "voice-1")
+        # 下一轮开始：录音中（busy），然后被新一轮 start 取消。
+        state.processing_task = asyncio.create_task(asyncio.sleep(0.2))
+        await asyncio.sleep(0.05)
+        await gw.cancel_active_turn(state, reason="new_start")
+        await asyncio.wait_for(task, timeout=3)
+        return state
+
+    state = asyncio.run(scenario())
+    assert spoken and spoken[0][0].startswith("后台任务完成：北京明天多云")
+    assert spoken[0][1] is False  # 播报时设备空闲
+    assert not state.background_result_tasks

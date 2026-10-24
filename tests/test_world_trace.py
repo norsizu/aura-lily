@@ -99,7 +99,7 @@ def test_collect_trace_reports_state_plan_and_ledger(tmp_path):
 
     tracked = payload["state"]["tracked"]
     assert set(tracked) >= {"mood", "energy", "satiety", "stress", "trust", "beans", "affinity_xp"}
-    assert tracked["beans"] == 40  # 下雨心情 -1，饿了买零食花了 10 金豆
+    assert tracked["beans"] == 40  # 下雨心情 -1，饿了买零食花了 10 金币
     drives = payload["state"]["hidden_drives"]
     assert set(drives) == {"social_need", "curiosity", "privacy_sensitivity", "resource_comfort"}
     assert payload["state"]["emotion_state"] == {"label": "平静", "intensity": 3}
@@ -126,7 +126,7 @@ def test_collect_trace_reports_state_plan_and_ledger(tmp_path):
     assert weather["changes"] == ["心情 60→59", "体力 40→39"]
     snack = next(item for item in ledger if item["event_type"] == "ledger.hunger_drive")
     assert "饱腹 30 ≤ 30" in snack["cause"]
-    assert "金豆 50→40" in snack["changes"]
+    assert "金币 50→40" in snack["changes"]
     drive = next(item for item in ledger if item["event_type"] == "ledger.drive_blend")
     assert drive["changes"] == ["社交 70→64"]
     assert "社交从 70 漂到 64" == drive["cause"]

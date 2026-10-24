@@ -53,7 +53,20 @@ def current_time_snapshot(
         "timezone": timezone_name or DEFAULT_TIMEZONE,
         "city": str(city or "").strip(),
         "display": f"{current.year}年{current.month}月{current.day}日，{weekday}，{current.hour:02d}点{current.minute:02d}分",
+        "date_display": f"{current.year}年{current.month}月{current.day}日",
+        "clock_display": f"{current.hour}点整" if current.minute == 0 else f"{current.hour}点{current.minute:02d}分",
     }
+
+
+def spoken_time_text(snapshot: dict[str, Any], focus: str = "") -> str:
+    """按问法只答被问的那部分：问日期答日期（带星期），问时间答几点，问星期答星期。"""
+    if focus == "date" and snapshot.get("date_display"):
+        return f"今天是{snapshot['date_display']}，{snapshot.get('weekday') or ''}".rstrip("，")
+    if focus == "weekday" and snapshot.get("weekday"):
+        return f"今天是{snapshot['weekday']}"
+    if focus == "time" and snapshot.get("clock_display"):
+        return f"现在是{snapshot['clock_display']}"
+    return f"现在是{snapshot.get('display') or ''}"
 
 
 def current_time_prompt_text(*, now: dt.datetime | None = None) -> str:
@@ -65,9 +78,9 @@ def current_time_prompt_text(*, now: dt.datetime | None = None) -> str:
     )
 
 
-def current_time_spoken_reply(*, now: dt.datetime | None = None) -> str:
+def current_time_spoken_reply(*, now: dt.datetime | None = None, focus: str = "") -> str:
     snapshot = current_time_snapshot(now=now)
-    return f"现在是{snapshot['display']}。"
+    return f"{spoken_time_text(snapshot, focus)}。"
 
 
 def timezone_for_city(city: str) -> str:

@@ -73,12 +73,27 @@ try:
     from integrations.aura_persona_gateway.state_rules import apply_time_recovery, compute_affinity_level
     from integrations.aura_persona_gateway.store import LilyPersonaStore
     from integrations.aura_persona_gateway.trace_data import read_state_at as trace_read_state_at
-    from integrations.aura_persona_gateway.weather import refresh_cached_weather_if_needed, refresh_user_weather_if_needed
+    from integrations.aura_persona_gateway.voice_turn import parse_sleep_timeout_request, sleep_timeout_receipt_reply
+    from integrations.aura_persona_gateway.weather import (
+        cached_user_weather_snapshot,
+        refresh_cached_weather_if_needed,
+        refresh_user_weather_if_needed,
+    )
     from integrations.aura_persona_gateway.world import build_world_snapshot
+    from integrations.aura_persona_gateway.world_ledger import (
+        LEDGER_SOURCE_WALLET,
+        apply_world_change,
+        record_reminder_ledger,
+        record_state_change,
+    )
 except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge only
     AuraRuntimeConfig = None
     apply_dessert_purchase = None
     apply_time_recovery = None
+    apply_world_change = None
+    record_reminder_ledger = None
+    record_state_change = None
+    LEDGER_SOURCE_WALLET = "wallet"
     classify_grounded_current_intent = None
     cached_weather_snapshot = None
     compute_affinity_level = None
@@ -90,6 +105,8 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     read_note_signal = None
     read_pinned_notes = None
     trace_read_state_at = None
+    parse_sleep_timeout_request = None
+    sleep_timeout_receipt_reply = None
     load_aura_runtime_config = None
     load_persona_config = None
     normalize_emotion = None
@@ -98,6 +115,7 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     resolve_query_context = None
     refresh_cached_weather_if_needed = None
     refresh_user_weather_if_needed = None
+    cached_user_weather_snapshot = None
     strip_emotion_tag = None
     warm_pooled_http_url = None
     build_world_snapshot = None
@@ -491,6 +509,7 @@ class TurnState:
     boot_id: str = ""
     fw_version: str = ""
     supports_local_audio: bool = False
+    supports_sleep_timeout: bool = False
     language: str = "zh"
     started_at: float = 0.0
     audio_bytes: int = 0
@@ -525,6 +544,10 @@ class TurnState:
     server_vad_triggered: bool = False
     processing_task: asyncio.Task[None] | None = None
     recording_watchdog_task: asyncio.Task[None] | None = None
+    # 后台任务（查天气、搜资料）的结果轮询挂在连接上，不挂在某一轮对话上：
+    # 连续对话会紧接着开下一轮录音，那一轮的 cancel 不能把等结果的人一起杀掉。
+    background_result_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    pending_device_actions: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     vad_seen_speech: bool = False
     vad_speech_ms: int = 0
     vad_silence_ms: int = 0
@@ -832,6 +855,8 @@ async def handle_connection(websocket: Any, config: GatewayConfig) -> None:
             except asyncio.CancelledError:
                 pass
         unregister_active_device_connection(websocket)
+        for task in list(state.background_result_tasks):
+            task.cancel()
         await cancel_recording_watchdog(state, reason="connection_close")
         await close_stepfun_tts_warm_session(state)
         await close_stepfun_step_plan_realtime_session(state)
@@ -854,6 +879,8 @@ async def handle_text_message(websocket: Any, config: GatewayConfig, state: Turn
         state.boot_id = str(body.get("boot_id") or device.get("boot_id") or "")
         state.fw_version = str(device.get("fw_version") or body.get("fw_version") or "").strip()
         state.supports_local_audio = firmware_supports_local_audio(state.fw_version)
+        capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else {}
+        state.supports_sleep_timeout = bool(capabilities.get("set_sleep_timeout"))
         state.language = _payload_language(payload, body, state.language)
         state.device_public_ip = _public_ip_from_payload(payload, body) or state.device_public_ip
         log_gateway(
@@ -865,6 +892,7 @@ async def handle_text_message(websocket: Any, config: GatewayConfig, state: Turn
             language=state.language,
             fw_version=state.fw_version,
             supports_local_audio=state.supports_local_audio,
+            supports_sleep_timeout=state.supports_sleep_timeout,
         )
         write_gateway_status(state, source_event="hello")
         await send_json(websocket, {
@@ -874,6 +902,10 @@ async def handle_text_message(websocket: Any, config: GatewayConfig, state: Turn
         runtime_config = load_runtime_config_for_gateway()
         await maybe_start_stepfun_tts_warm_session(websocket, state, runtime_config, reason="hello")
         start_status_update_task(websocket, runtime_config)
+        return
+
+    if message_type == "action_result":
+        receive_device_action_result(state, {**body, **payload})
         return
 
     if message_type == "heartbeat":
@@ -936,6 +968,12 @@ async def handle_text_message(websocket: Any, config: GatewayConfig, state: Turn
         if result.get("ok"):
             runtime_config = load_runtime_config_for_gateway()
             await send_status_update(websocket, runtime_config)
+        return
+
+    if message_type == "outfit_purchase":
+        result = await asyncio.to_thread(handle_outfit_purchase, body)
+        if result.get("ok"):
+            await send_status_update(websocket, load_runtime_config_for_gateway())
         return
 
     if message_type == "start":
@@ -1164,23 +1202,25 @@ def handle_dessert_purchase(body: dict[str, Any]) -> dict[str, Any]:
         updated, result = apply_dessert_purchase(
             state,
             body.get("item_id"),
-            device_beans=body.get("beans"),
+            device_beans=None,
         )
         if not result.get("ok") or updated is None:
             return result
         store.save_state(persona_config.scope, updated)
-        store.record_life_event(
-            persona_config.scope,
-            event_type="companion.dessert",
-            event_key=f"dessert:{int(time.time() * 1000)}:{result.get('item_id')}",
-            title=f"吃了{result.get('name') or '甜品'}",
-            description="甜品带来短暂的满足感和心情改善。",
-            location="outside.cafe",
-            activity="吃甜品",
-            visibility="private",
-            delta={**dict(result.get("effects") or {}), "beans": -int(result.get("price") or 0)},
-            payload={"source": "device_dessert_menu", "item_id": result.get("item_id")},
-        )
+        if record_state_change:
+            record_state_change(
+                store,
+                persona_config.scope,
+                state,
+                updated,
+                source=LEDGER_SOURCE_WALLET,
+                cause="甜品带来短暂的满足感和心情改善",
+                title=f"吃了{result.get('name') or '甜品'}",
+                event_key=f"dessert:{int(time.time() * 1000)}:{result.get('item_id')}",
+                location="outside.cafe",
+                activity="吃甜品",
+                payload={"item_id": result.get("item_id")},
+            )
         return result
     except Exception as exc:  # pragma: no cover - defensive websocket boundary
         log_gateway("dessert_purchase_failed", detail=exc.__class__.__name__)
@@ -1193,13 +1233,18 @@ def _start_payload(payload: dict[str, Any], body: dict[str, Any]) -> dict[str, A
     return merged
 
 
-def continue_listening_for_device(state: TurnState) -> bool:
+def continue_listening_for_device(state: TurnState, *, deferred: bool = False) -> bool:
     """Return the session opt-in without changing legacy clients.
 
     Continuous capture is a device/session capability, not a global gateway
     default. The public firmware sends this flag on each start frame; clients
     that omit it keep the original press-to-talk behavior.
+
+    后台任务进行中（回“我去查一下”那句、或者结果回传那句）不续听：
+    设备回到待机亮 WORK 面板，结果回来直接播，不会撞上自动开的空录音轮。
     """
+    if deferred or any(not task.done() for task in getattr(state, "background_result_tasks", ()) or ()):
+        return False
     metadata = state.metadata if isinstance(state.metadata, dict) else {}
     return _coerce_bool(
         metadata.get("continuous_dialogue", metadata.get("hands_free", False)),
@@ -1728,6 +1773,9 @@ async def _run_voice_turn(websocket: Any, config: GatewayConfig, state: TurnStat
         )
         return
 
+    if await maybe_handle_sleep_timeout_request(websocket, runtime_config, state, asr.text):
+        return
+
     await send_json(websocket, {
         "type": "status",
         "text": "正在生成回复",
@@ -1790,7 +1838,7 @@ async def _run_voice_turn(websocket: Any, config: GatewayConfig, state: TurnStat
     )
     task_id = str(evidence.get("task_id") or "").strip()
     if bool(evidence.get("deferred")) and task_id:
-        await poll_and_send_background_result(websocket, config, runtime_config, state, task_id)
+        start_background_result_task(websocket, config, runtime_config, state, task_id)
 
 
 async def maybe_trigger_server_vad(websocket: Any, config: GatewayConfig, state: TurnState, packet: bytes) -> None:
@@ -2703,7 +2751,7 @@ async def send_dialogue_and_tts(
             "scene": dialogue_scene({"evidence": bridge_evidence or {}}),
             "coins_earned": max(0, int(coins_earned or 0)),
             "deferred": bool(deferred),
-            "continue_listening": continue_listening_for_device(state),
+            "continue_listening": continue_listening_for_device(state, deferred=bool(deferred)),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,
@@ -2965,6 +3013,104 @@ def background_work_progress(elapsed_seconds: float, timeout_seconds: float) -> 
     return min(95, 10 + int((elapsed / total) * 85))
 
 
+BACKGROUND_DELIVERY_IDLE_WAIT_SECONDS = 60.0
+
+
+def start_background_result_task(
+    websocket: Any,
+    config: GatewayConfig,
+    runtime_config: Any,
+    state: TurnState,
+    task_id: str,
+) -> asyncio.Task[None]:
+    async def runner() -> None:
+        try:
+            await poll_and_send_background_result(websocket, config, runtime_config, state, task_id)
+        except (ConnectionClosed, asyncio.CancelledError):
+            return
+        except Exception as exc:  # pragma: no cover - defensive async boundary
+            log_gateway("background_result_failed", task_id=task_id, detail=exc.__class__.__name__)
+
+    task = asyncio.create_task(runner())
+    state.background_result_tasks.add(task)
+    task.add_done_callback(state.background_result_tasks.discard)
+    log_gateway("background_result_watch", turn_id=state.turn_id, task_id=task_id)
+    return task
+
+
+DEVICE_ACTION_TIMEOUT_SECONDS = 4.0
+
+
+def receive_device_action_result(state: TurnState, body: dict[str, Any]) -> None:
+    action_id = str(body.get("action_id") or "").strip()
+    future = state.pending_device_actions.get(action_id)
+    if future is None or future.done():
+        log_gateway("device_action_result_ignored", action_id=action_id, reason="unknown_or_late")
+        return
+    future.set_result(dict(body))
+
+
+async def dispatch_device_action(websocket: Any, state: TurnState, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """给设备发一个动作并等固件回执；超时就按 timeout 报，不替设备说“做好了”。"""
+    action_id = f"{action}-{state.boot_id or 'boot'}-{state.turn_id}-{int(time.time() * 1000)}"
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+    state.pending_device_actions[action_id] = future
+    try:
+        await send_json(websocket, {"type": "action", "action_id": action_id, "action": action, "payload": payload})
+        return await asyncio.wait_for(future, timeout=DEVICE_ACTION_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return {"action_id": action_id, "action": action, "status": "timeout", "code": "timeout"}
+    finally:
+        state.pending_device_actions.pop(action_id, None)
+
+
+async def maybe_handle_sleep_timeout_request(websocket: Any, runtime_config: Any, state: TurnState, transcript: str) -> bool:
+    """“休眠时间调到1分钟”：直接发给设备改，拿到回执再回话。"""
+    if parse_sleep_timeout_request is None:
+        return False
+    minutes = parse_sleep_timeout_request(transcript)
+    if minutes is None:
+        return False
+    await cancel_bridge_speculative(state, reason="device_action")
+    receipt: dict[str, Any] = {"action": "set_sleep_timeout", "status": "unsupported", "code": "action_not_supported_by_firmware"}
+    if not 1 <= minutes <= 120:
+        receipt = {"action": "set_sleep_timeout", "status": "failed", "code": "invalid_sleep_timeout"}
+    elif state.supports_sleep_timeout:
+        receipt = await dispatch_device_action(websocket, state, "set_sleep_timeout", {"minutes": minutes, "state_version": 1})
+    ok = str(receipt.get("status") or "") == "ok"
+    log_gateway("device_action_receipt", turn_id=state.turn_id, action="set_sleep_timeout", minutes=minutes,
+                status=receipt.get("status"), code=receipt.get("code"))
+    await send_dialogue_and_tts(
+        websocket,
+        runtime_config,
+        state,
+        sleep_timeout_receipt_reply(minutes, receipt),
+        ok=ok,
+        transcript=transcript,
+        voice_turn={"decision_path": "device_action_receipt", "action": "set_sleep_timeout", "action_receipt": receipt},
+    )
+    return True
+
+
+def device_turn_busy(state: TurnState) -> bool:
+    """设备正在录音或这一轮还在处理/播报。"""
+    for task in (state.processing_task, state.recording_watchdog_task):
+        if task is not None and not task.done():
+            return True
+    return False
+
+
+async def wait_device_idle_for_delivery(state: TurnState, task_id: str) -> None:
+    """结果回来时用户可能正在说下一句（或连续对话空录了一轮），等这一轮结束再播，不抢话。"""
+    deadline = time.monotonic() + BACKGROUND_DELIVERY_IDLE_WAIT_SECONDS
+    waited = False
+    while device_turn_busy(state) and time.monotonic() < deadline:
+        waited = True
+        await asyncio.sleep(0.3)
+    if waited:
+        log_gateway("background_result_waited_idle", turn_id=state.turn_id, task_id=task_id, busy=device_turn_busy(state))
+
+
 async def poll_and_send_background_result(
     websocket: Any,
     config: GatewayConfig,
@@ -3004,6 +3150,17 @@ async def poll_and_send_background_result(
         if result.get("ok") and str(result.get("body") or "").strip():
             duration_seconds = time.monotonic() - started
             beans = background_work_beans(duration_seconds)
+            try:
+                await asyncio.to_thread(
+                    companion_record_beans,
+                    beans,
+                    cause="后台任务完成，按耗时结算金币",
+                    title="帮你跑完一个后台任务",
+                    payload={"source": "background_work", "task_id": task_id},
+                )
+            except Exception as exc:  # pragma: no cover - defensive async boundary
+                log_gateway("work_beans_failed", detail=exc.__class__.__name__)
+            await wait_device_idle_for_delivery(state, task_id)
             await send_dialogue_and_tts(
                 websocket,
                 runtime_config,
@@ -3031,6 +3188,7 @@ async def poll_and_send_background_result(
             start_status_update_task(websocket, runtime_config)
             return
         # 失败也要说出来，否则用户只听到“先处理”就没下文了。
+        await wait_device_idle_for_delivery(state, task_id)
         await send_dialogue_and_tts(
             websocket,
             runtime_config,
@@ -3050,6 +3208,7 @@ async def poll_and_send_background_result(
             },
         })
         return
+    await wait_device_idle_for_delivery(state, task_id)
     await send_dialogue_and_tts(
         websocket,
         runtime_config,
@@ -3135,6 +3294,8 @@ def maybe_schedule_voice_reminder(
         _SCHEDULED_REMINDERS.clear()
         _SCHEDULED_REMINDER_INFO.clear()
         log_gateway("reminder_cancel_all", cancelled=len(cancelled), reminder_ids=",".join(cancelled))
+        if cancelled:
+            companion_record_reminder("cancel")
         return
     reminder_id = str(reminder.get("reminder_id") or "").strip()
     fire_at = float(reminder.get("fire_at_epoch") or 0)
@@ -3157,6 +3318,12 @@ def maybe_schedule_voice_reminder(
         delay_s=int(fire_at - time.time()),
         label=str(reminder.get("label") or ""),
         pending=len(_SCHEDULED_REMINDERS),
+    )
+    companion_record_reminder(
+        "set",
+        label=_SCHEDULED_REMINDER_INFO[reminder_id]["label"],
+        fire_at=fire_at,
+        reminder_id=reminder_id,
     )
 
 
@@ -3191,16 +3358,49 @@ async def _fire_voice_reminder(reminder_id: str, fire_at: float, announce: str) 
                     request_id=reminder_id,
                 )
                 log_gateway("reminder_fired", reminder_id=reminder_id, late_s=int(time.time() - fire_at))
+                label = str((_SCHEDULED_REMINDER_INFO.get(reminder_id) or {}).get("label") or announce)
+                await asyncio.to_thread(
+                    companion_record_reminder, "fire", label=label, fire_at=fire_at, reminder_id=reminder_id
+                )
                 return
             except Exception as exc:  # 连接可能刚好断了，等重连后重试。
                 log_gateway("reminder_send_retry", reminder_id=reminder_id, error=str(exc)[:200])
                 await asyncio.sleep(REMINDER_RETRY_INTERVAL_SECONDS)
         log_gateway("reminder_dropped", reminder_id=reminder_id, reason="device_offline_too_long")
+        label = str((_SCHEDULED_REMINDER_INFO.get(reminder_id) or {}).get("label") or announce)
+        await asyncio.to_thread(
+            companion_record_reminder, "drop", label=label, fire_at=fire_at, reminder_id=reminder_id
+        )
     except asyncio.CancelledError:
         raise
     finally:
         _SCHEDULED_REMINDERS.pop(reminder_id, None)
         _SCHEDULED_REMINDER_INFO.pop(reminder_id, None)
+
+
+def companion_record_reminder(
+    action: str,
+    *,
+    label: str = "",
+    fire_at: float | None = None,
+    reminder_id: str = "",
+) -> None:
+    """提醒定下/到点/取消时记一行账本，X1 大屏才看得到。记失败不影响提醒本身。"""
+    if not load_persona_config or not LilyPersonaStore or not record_reminder_ledger:
+        return
+    try:
+        persona_config = load_persona_config()
+        store = LilyPersonaStore(persona_config.companion_db_path)
+        record_reminder_ledger(
+            store,
+            persona_config.scope,
+            action=action,
+            label=label,
+            fire_at=fire_at,
+            reminder_id=reminder_id,
+        )
+    except Exception as exc:  # pragma: no cover - defensive: ledger must not block reminders
+        log_gateway("reminder_ledger_failed", action=action, detail=str(exc)[:200])
 
 
 def companion_pinned_notes() -> list[dict[str, Any]]:
@@ -3313,16 +3513,54 @@ def refresh_runtime_weather_for_gateway(runtime_config: Any) -> Any:
             city = ""
     try:
         updated, _result = refresh_cached_weather_if_needed(runtime_config, city=city)
-        return updated
     except Exception:
-        return runtime_config
+        updated = runtime_config
+    # 设备休眠屏报的是用户那边的天气；她自己城市的天气只喂世界模型。
+    user_city = device_weather_city()
+    if user_city and refresh_user_weather_if_needed:
+        try:
+            updated, _result = refresh_user_weather_if_needed(updated, city=user_city)
+        except Exception:
+            pass
+    return updated
+
+
+DEVICE_WEATHER_MAX_AGE_SECONDS = 3 * 3600
+
+
+def device_weather_city() -> str:
+    """设备上显示天气的城市：用户所在城市（persona 配置 user_home_city），没配就是空。"""
+    if not load_persona_config:
+        return ""
+    try:
+        return str(load_persona_config().user_home_city or "").strip()
+    except Exception:
+        return ""
+
+
+def device_weather_snapshot(runtime_config: Any, *, now: float | None = None) -> dict[str, Any]:
+    """休眠屏的天气。配了用户城市就只报用户城市，拿不到就不报，绝不拿她的城市顶替。"""
+    user_city = device_weather_city()
+    if not user_city:
+        weather = cached_weather_snapshot(runtime_config) if cached_weather_snapshot else {}
+        return weather if weather.get("status") == "fresh" else {}
+    if not cached_user_weather_snapshot:
+        return {}
+    weather = cached_user_weather_snapshot(runtime_config, city=user_city)
+    if not weather or not (weather.get("temperature") or weather.get("condition")):
+        return {}
+    updated_at = int(weather.get("updated_at") or 0)
+    current = time.time() if now is None else float(now)
+    if not updated_at or current - updated_at > DEVICE_WEATHER_MAX_AGE_SECONDS:
+        return {}
+    return weather
 
 
 def companion_status_fields() -> dict[str, Any]:
     """从 companion.db 读取 Aura 数值状态（附带闲置恢复结算），供 status_update 下发。
 
-    刻意不下发 beans/coins：豆子余额由设备本地记账（商店购买不回传服务端），
-    下发会把用户刚花掉的豆子又“变”回来。
+    金币以服务端为准：世界模型吃饭会花钱、打工会挣钱，设备买衣服/甜品也都回传
+    服务端扣款，所以这里把余额一起下发，设备面板和账本才对得上。
     """
     if not load_persona_config or not LilyPersonaStore or not apply_time_recovery:
         return {}
@@ -3342,6 +3580,7 @@ def companion_status_fields() -> dict[str, Any]:
             "satiety": int(state.get("satiety") or 0),
             "affinity_xp": affinity_xp,
             "affinity_level": compute_affinity_level(affinity_xp),
+            "beans": int(state.get("beans") or state.get("coins") or 0),
         }
     except Exception as exc:
         log_gateway("companion_status_read_failed", detail=str(exc)[:200])
@@ -3642,6 +3881,62 @@ def companion_world_status_fields(runtime_config: Any, *, now: float | None = No
         return {}
 
 
+OUTFIT_PRICE_MAX = 1000
+
+
+def companion_record_beans(
+    delta: int,
+    *,
+    cause: str,
+    title: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """改服务端金币余额并记一笔账（走世界账本，X-Ray 和回放都看得到）；不够扣时拒绝。"""
+    if not load_persona_config or not LilyPersonaStore or not apply_world_change:
+        return {"ok": False, "status": "world_unavailable"}
+    persona_config = load_persona_config()
+    store = LilyPersonaStore(persona_config.companion_db_path)
+    scope = persona_config.scope
+    state = store.get_or_create_state(scope)
+    balance = max(0, int(state.get("beans") or state.get("coins") or 0))
+    if balance + delta < 0:
+        return {"ok": False, "status": "insufficient_beans", "beans": balance}
+    updated, _summary = apply_world_change(
+        store,
+        scope,
+        state,
+        {"beans": delta},
+        source=LEDGER_SOURCE_WALLET,
+        cause=cause,
+        title=title,
+        event_key=f"wallet:{int(time.time() * 1000)}",
+        payload=payload,
+    )
+    store.save_state(scope, updated)
+    return {"ok": True, "beans": int(updated.get("beans") or 0)}
+
+
+def handle_outfit_purchase(body: dict[str, Any]) -> dict[str, Any]:
+    """设备商店买衣服：设备先本地扣款换装，这里把同一笔扣到服务端余额上。"""
+    try:
+        price = int(body.get("price") or 0)
+    except (TypeError, ValueError):
+        price = 0
+    name = str(body.get("name") or "新衣服").strip()[:16] or "新衣服"
+    if price <= 0 or price > OUTFIT_PRICE_MAX:
+        return {"ok": False, "status": "invalid_price"}
+    try:
+        return companion_record_beans(
+            -price,
+            cause="在设备商店里买了一套新衣服",
+            title=f"买了{name}",
+            payload={"source": "device_outfit_shop", "outfit": body.get("outfit"), "price": price},
+        )
+    except Exception as exc:  # pragma: no cover - defensive websocket boundary
+        log_gateway("outfit_purchase_failed", detail=exc.__class__.__name__)
+        return {"ok": False, "status": "failed"}
+
+
 def companion_apply_work_energy_cost(duration_seconds: float) -> int:
     """打工消耗体力：约每分钟 1 点，2..15 封顶；写回 companion.db，返回实际扣减值。"""
     if not load_persona_config or not LilyPersonaStore:
@@ -3680,10 +3975,10 @@ def status_update_payload(runtime_config: Any, *, now: float | None = None) -> d
         quota = _cached_device_quota_payload(runtime_config)
     if quota:
         payload["quota"] = quota
-    if not runtime_config or not cached_weather_snapshot:
+    if not runtime_config:
         return payload
-    weather = cached_weather_snapshot(runtime_config)
-    if weather.get("status") != "fresh":
+    weather = device_weather_snapshot(runtime_config, now=now)
+    if not weather:
         return payload
     temperature = _temperature_number(weather.get("temperature"))
     if temperature is not None:
@@ -7375,7 +7670,7 @@ async def stream_dialogue_and_tts_from_bridge(
             "scene": dialogue_scene(final_payload),
             "coins_earned": 0,
             "deferred": bool(evidence.get("deferred")),
-            "continue_listening": continue_listening_for_device(state),
+            "continue_listening": continue_listening_for_device(state, deferred=bool(evidence.get("deferred"))),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,
@@ -7571,7 +7866,7 @@ async def stream_dialogue_and_tts_from_bridge(
     maybe_schedule_voice_reminder(evidence, voice_turn_payload)
     task_id = str(evidence.get("task_id") or "").strip()
     if bool(evidence.get("deferred")) and task_id:
-        await poll_and_send_background_result(websocket, config, runtime_config, state, task_id)
+        start_background_result_task(websocket, config, runtime_config, state, task_id)
     return True
 
 

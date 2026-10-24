@@ -609,6 +609,7 @@ static esp_err_t ws_send_hello(void)
     cJSON_AddBoolToObject(caps, "hands_free", true);
     cJSON_AddBoolToObject(caps, "continuous_auto_vad", true);
     cJSON_AddBoolToObject(caps, "single_device", true);
+    cJSON_AddBoolToObject(caps, "set_sleep_timeout", true);
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -2252,6 +2253,27 @@ esp_err_t ws_client_send_dessert_purchase(const char *item_id, int beans)
     return ret;
 }
 
+esp_err_t ws_client_send_outfit_purchase(int outfit_idx, int price, const char *name)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *payload = cJSON_AddObjectToObject(root, "payload");
+    if (!root || !payload) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(root, "type", "outfit_purchase");
+    cJSON_AddNumberToObject(payload, "outfit", outfit_idx);
+    cJSON_AddNumberToObject(payload, "price", price);
+    cJSON_AddStringToObject(payload, "name", name ? name : "");
+    cJSON_AddStringToObject(payload, "device_id", s_device_id);
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!text) return ESP_ERR_NO_MEM;
+    esp_err_t ret = ws_client_send_text_timeout(text, WS_CONTROL_SEND_TIMEOUT_MS);
+    cJSON_free(text);
+    return ret;
+}
+
 bool ws_client_dessert_purchase_pending(void)
 {
     return s_dessert_purchase_pending;
@@ -2936,6 +2958,46 @@ static void handle_server_message(const char *json_str, int len)
             ESP_LOGI(TAG, "Aura status updated: mood=%d energy=%d satiety=%d affinity=%d lv=%d beans=%d",
                      g_state.mood, g_state.energy, g_state.satiety, g_state.affinity, g_state.affinity_level, g_state.coins);
             aura_ui_mark_dirty();
+        }
+    }
+
+    /* ── action: 服务端下发的设备设置，执行后必须回 action_result，服务端凭回执回话 ── */
+    else if (strcmp(mtype, "action") == 0) {
+        const cJSON *id = cJSON_GetObjectItem(root, "action_id");
+        const cJSON *act = cJSON_GetObjectItem(root, "action");
+        const cJSON *args = cJSON_GetObjectItem(root, "payload");
+        if (cJSON_IsString(id) && strlen(id->valuestring) <= 160 && cJSON_IsString(act)) {
+            const char *status = "unsupported";
+            const char *code = "action_not_supported_by_firmware";
+            if (strcmp(act->valuestring, "set_sleep_timeout") == 0) {
+                const cJSON *minutes = args ? cJSON_GetObjectItem(args, "minutes") : NULL;
+                status = "failed";
+                code = "invalid_sleep_timeout";
+                if (cJSON_IsNumber(minutes) && minutes->valuedouble == minutes->valueint &&
+                    minutes->valueint >= 1 && minutes->valueint <= 120) {
+                    esp_err_t err = aura_ui_set_idle_minutes((uint32_t)minutes->valueint);
+                    status = err == ESP_OK ? "ok" : "failed";
+                    code = err == ESP_OK ? "sleep_timeout_set" : "sleep_timeout_save_failed";
+                    ESP_LOGI(TAG, "Idle board timeout: %u minutes, saved=%d",
+                             (unsigned)aura_ui_idle_minutes(), err == ESP_OK);
+                }
+            }
+            cJSON *reply = cJSON_CreateObject();
+            if (reply) {
+                cJSON_AddStringToObject(reply, "type", "action_result");
+                cJSON_AddStringToObject(reply, "action_id", id->valuestring);
+                cJSON_AddStringToObject(reply, "action", act->valuestring);
+                cJSON_AddStringToObject(reply, "status", status);
+                cJSON_AddStringToObject(reply, "code", code);
+                cJSON *detail = cJSON_AddObjectToObject(reply, "detail");
+                if (detail) cJSON_AddNumberToObject(detail, "minutes", aura_ui_idle_minutes());
+                char *wire = cJSON_PrintUnformatted(reply);
+                if (wire) {
+                    ws_client_send_text(wire);
+                    cJSON_free(wire);
+                }
+                cJSON_Delete(reply);
+            }
         }
     }
 
