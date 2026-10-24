@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把 8 张情绪脸 PNG 打成 X-Ray 大屏用的内联图片模块。
 
-lily-BuilderHub/art/emotion/<emotion>.png → integrations/hermes_lily_cli/trace_faces.py
+art/emotion/<emotion>.png → integrations/hermes_lily_cli/trace_faces.py
 （base64 PNG，大屏页面不引用任何外部资源）。只用 Pillow。
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ def encode_face(path: Path, size: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--src", type=Path, default=REPO / "lily-BuilderHub/art/emotion")
+    parser.add_argument("--src", type=Path, default=REPO / "art/emotion")
     parser.add_argument("--out", type=Path, default=REPO / "integrations/hermes_lily_cli/trace_faces.py")
     parser.add_argument("--size", type=int, default=280)
     args = parser.parse_args()
