@@ -4094,6 +4094,103 @@ def test_stepfun_ws_tts_warm_ignores_audio_before_first_text(tmp_path):
     assert session.audio_bytes == 0
 
 
+def _hold_session(gateway_module, tmp_path, sent):
+    class FakeWebsocket:
+        async def send(self, payload):
+            sent.append(payload)
+
+    session = gateway_module.StepfunWsTtsSession(
+        FakeWebsocket(),
+        AuraRuntimeConfig(
+            persona_home=str(tmp_path / "persona-home"),
+            tts_enabled=True,
+            tts_provider="stepfun",
+            tts_model="stepaudio-2.5-tts",
+            tts_voice="voice-tone-test",
+            tts_base_url="https://api.stepfun.com/step_plan/v1",
+            tts_api_key="unit-key",
+        ),
+        turn_id=7,
+        stream_id=1,
+        started=time.monotonic(),
+    )
+    session.source_rate = gateway_module.DEVICE_SAMPLE_RATE
+    return session
+
+
+def _pcm_delta(ms):
+    return {"audio": base64.b64encode(b"\x01\x00" * (16 * ms)).decode("ascii")}
+
+
+def test_stepfun_ws_tts_start_hold_waits_when_synthesis_is_slow(monkeypatch, tmp_path):
+    from integrations.hermes_lily_cli import gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "TTS_START_HOLD_MS", 1000)
+    monkeypatch.setattr(gateway_module, "TTS_START_HOLD_MAX_WAIT_MS", 3500)
+    sent = []
+    session = _hold_session(gateway_module, tmp_path, sent)
+    session.text_chars = 35  # 约 7.7 秒的话
+
+    async def scenario():
+        await session._send_audio_delta(_pcm_delta(600))
+        # 1.2 秒才合成出 1.2 秒声音：速度 1.0 以下就得多攒
+        session._hold_first_at -= 2.0
+        await session._send_audio_delta(_pcm_delta(600))
+        held = len(sent)
+        await session._release_hold("done")
+        return held
+
+    held = asyncio.run(scenario())
+
+    assert held == 0
+    assert sum(len(frame) - 16 for frame in sent) == 2 * 16 * 600 * 2
+    assert session._holding is False
+
+
+def test_stepfun_ws_tts_start_hold_releases_when_synthesis_is_fast(monkeypatch, tmp_path):
+    from integrations.hermes_lily_cli import gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "TTS_START_HOLD_MS", 1000)
+    monkeypatch.setattr(gateway_module, "TTS_START_HOLD_MIN_SAMPLE_MS", 400)
+    sent = []
+    session = _hold_session(gateway_module, tmp_path, sent)
+    session.text_chars = 20
+
+    async def scenario():
+        await session._send_audio_delta(_pcm_delta(800))
+        assert sent == []
+        session._hold_first_at -= 0.5  # 0.5 秒合成 1.6 秒：快于实时
+        await session._send_audio_delta(_pcm_delta(800))
+        released = len(sent)
+        await session._send_audio_delta(_pcm_delta(100))
+        return released
+
+    released = asyncio.run(scenario())
+
+    assert released > 0
+    assert session._holding is False
+    assert len(sent) > released  # 放行后直接透传
+
+
+def test_stepfun_ws_tts_start_hold_releases_at_max_wait(monkeypatch, tmp_path):
+    from integrations.hermes_lily_cli import gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "TTS_START_HOLD_MAX_WAIT_MS", 3500)
+    sent = []
+    session = _hold_session(gateway_module, tmp_path, sent)
+    session.text_chars = 200
+
+    async def scenario():
+        await session._send_audio_delta(_pcm_delta(100))
+        session._hold_first_at -= 4.0
+        await session._send_audio_delta(_pcm_delta(100))
+
+    asyncio.run(scenario())
+
+    assert sent
+    assert session._holding is False
+
+
 def test_stepfun_ws_tts_flush_each_delta_defaults_off():
     from integrations.hermes_lily_cli import gateway as gateway_module
 
@@ -8436,219 +8533,6 @@ def test_gateway_bridge_stream_skips_stage_direction_segments_for_tts(monkeypatc
     assert dialogue["payload"]["text"] == "我在。"
 
 
-def test_gateway_bridge_stream_falls_back_when_stream_ends_incomplete(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "最近状态啊... 其实我"}
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=14, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天想聊聊最近状态，你自然回应一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
-def test_gateway_bridge_stream_falls_back_for_short_unfounded_status_opening(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "其实你"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "其实你",
-                "request_id": "req-short-bad",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=15, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
-def test_gateway_bridge_stream_blocks_status_metaphor_before_tts(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "最近状态嘛，感觉是‘电量还剩一半，但不知道往哪儿充’？"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "最近状态嘛，感觉是‘电量还剩一半，但不知道往哪儿充’？",
-                "request_id": "req-status-metaphor",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 10)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=153, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天想聊聊最近状态，你自然回应一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
-def test_gateway_stream_guard_blocks_incomplete_life_rhythm_status_axis():
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "是觉得生活节奏",
-        transcript="我今天想聊聊最近状态，你自然回应一句。",
-    ) is True
-
-
-def test_gateway_stream_guard_blocks_incomplete_work_rhythm_status_opening():
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "我也觉得该理",
-        transcript="我想聊聊最近的工作节奏，你自然回应一句。",
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "我也觉得该理一理，",
-        transcript="我想聊聊最近的工作节奏，你自然回应一句。",
-    ) is True
-
-
-def test_gateway_stream_guard_blocks_cutoff_work_rhythm_reply():
-    transcript = "我想聊聊最近的工作节奏，你自然回应一句。"
-
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "我也觉得这种节奏有点磨人。",
-        transcript=transcript,
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "我也觉得这种节奏有点磨人。是事情堆得太满了让你觉得累，还是单纯提不起劲儿搞那些",
-        transcript=transcript,
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "周六凌晨三点。",
-        transcript=transcript,
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "最近是事情太满，？",
-        transcript=transcript,
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "从工作节奏说起：是事情太满，还是提不起劲？",
-        transcript=transcript,
-    ) is False
-
-
 def test_gateway_stream_waits_for_complete_first_sentence_on_work_rhythm():
     transcript = "我想聊聊最近的工作节奏，你自然回应一句。"
 
@@ -8711,146 +8595,6 @@ def test_gateway_stream_guard_allows_status_terms_user_already_said():
     ) is False
 
 
-def test_gateway_stream_guard_blocks_open_chat_wakeup_state_and_incomplete_fragment():
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "反正我也刚醒，这会儿脑子最清醒。",
-        transcript="我想聊聊。",
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "不过，",
-        transcript="我想聊聊。",
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "不过这一大早的，你是突然想通了，还是又钻牛角尖里去了？",
-        transcript="我想聊聊。",
-    ) is True
-    assert gateway_module.stream_bridge_response_needs_guard(
-        "不过先说好，今晚这时间点儿，你是想聊点正经的，还是单纯想找人说说话？",
-        transcript="我想聊聊。",
-    ) is True
-
-
-def test_gateway_bridge_stream_skips_status_topic_echo_and_uses_next_sentence(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "最近状态啊？"}
-        yield {"type": "delta", "text": "先看睡眠还是工作？"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "最近状态啊？先看睡眠还是工作？",
-                "request_id": "req-status-echo-then-good",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=151, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天想聊聊最近状态，你自然回应一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["先看睡眠还是工作？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "先看睡眠还是工作？"
-
-
-def test_gateway_bridge_stream_falls_back_for_status_topic_echo_only(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "最近状态啊？"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "最近状态啊？",
-                "request_id": "req-status-echo-only",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=152, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天想聊聊最近状态，你自然回应一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
 def test_gateway_bridge_stream_waits_full_first_status_sentence(monkeypatch, tmp_path):
     sent = []
     synthesized = []
@@ -8907,188 +8651,6 @@ def test_gateway_bridge_stream_waits_full_first_status_sentence(monkeypatch, tmp
 
     assert streamed is True
     assert synthesized == ["最近状态可以先从工作节奏复盘。"]
-
-
-def test_gateway_bridge_stream_skips_empty_opening_and_uses_next_answer(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "行呀，那咱们就直奔主题。"}
-        yield {"type": "delta", "text": "先看工作节奏：是事情太满，还是提不起劲？"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "行呀，那咱们就直奔主题。先看工作节奏：是事情太满，还是提不起劲？",
-                "request_id": "req-empty-opening",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 16)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=161, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["先看工作节奏：是事情太满，还是提不起劲？"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "先看工作节奏：是事情太满，还是提不起劲？"
-
-
-def test_gateway_bridge_stream_blocks_open_chat_placeholder_to_tts(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "聊啥？"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "聊啥？",
-                "request_id": "req-open-placeholder",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=162, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我想聊聊。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["先说你最想聊的那一件。"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "先说你最想聊的那一件。"
-
-
-def test_gateway_bridge_stream_blocks_open_chat_companion_placeholder_tail_to_tts(monkeypatch, tmp_path):
-    sent = []
-    synthesized = []
-
-    class FakeWebsocket:
-        async def send(self, payload):
-            sent.append(payload)
-
-    from integrations.hermes_lily_cli import gateway as gateway_module
-
-    async def fake_bridge_stream_events(config, state, transcript):
-        yield {"type": "delta", "text": "那我就在这儿陪着你。"}
-        yield {"type": "delta", "text": "你想从哪儿"}
-        yield {
-            "type": "final",
-            "payload": {
-                "ok": True,
-                "status": "completed",
-                "response": "那我就在这儿陪着你。你想从哪儿",
-                "request_id": "req-open-companion-placeholder",
-                "evidence": {"streamed": True},
-            },
-        }
-
-    def fake_synthesize_tts(runtime_config, text):
-        synthesized.append(text)
-        return TtsResult(ok=True, audio=f"pcm:{text}".encode("utf-8"), chunk_count=1, latency_ms=1, first_chunk_ms=1)
-
-    monkeypatch.setattr(gateway_module, "bridge_stream_events", fake_bridge_stream_events)
-    monkeypatch.setattr(gateway_module, "synthesize_tts", fake_synthesize_tts)
-    monkeypatch.setattr(gateway_module, "STEPFUN_WS_TTS_ENABLED", False)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_MIN_CHARS", 4)
-    monkeypatch.setattr(gateway_module, "BRIDGE_STREAM_FIRST_SEGMENT_CHARS", 6)
-
-    runtime = AuraRuntimeConfig(
-        persona_home=str(tmp_path / "persona-home"),
-        tts_enabled=True,
-        tts_provider="voxcpm",
-        tts_model="voxcpm2",
-        tts_voice="yan",
-        tts_base_url="http://tts.local/v1/audio/speech",
-        tts_sample_rate=DEVICE_SAMPLE_RATE,
-    )
-    config = GatewayConfig(host="127.0.0.1", port=8787, bridge_url="http://bridge/turn")
-    state = TurnState(turn_id=163, audio_chunks=[b"pcm"], asr_latency_ms=3)
-
-    streamed = asyncio.run(gateway_module.stream_dialogue_and_tts_from_bridge(
-        FakeWebsocket(),
-        config,
-        runtime,
-        state,
-        "我想聊聊。",
-    ))
-
-    assert streamed is True
-    assert synthesized == ["先说你最想聊的那一件。"]
-    messages = [json.loads(item) for item in sent if isinstance(item, str)]
-    dialogue = [item for item in messages if item.get("type") == "dialogue"][-1]
-    assert dialogue["payload"]["text"] == "先说你最想聊的那一件。"
 
 
 def test_gateway_bridge_stream_keeps_spoken_safe_sentence_when_final_tail_bad(monkeypatch, tmp_path):
@@ -9512,13 +9074,6 @@ def test_gateway_device_spoken_text_dedupes_repeated_realtime_text():
     assert device_spoken_text("心情还挺亮的，跟你说话会放松一点。跟你说话会放松一点。") == "心情还挺亮的，跟你说话会放松一点。"
     assert device_spoken_text("采样率正常。采样率正常！") == "采样率正常。"
     assert device_spoken_text("好，好，我听着。") == "好，好，我听着。"
-
-
-def test_gateway_stream_bridge_fallback_response_anchors_job_change():
-    assert gateway_module.stream_bridge_fallback_response("最近想换工作，能聊聊吗？") == (
-        "换工作这件事先拆开看：是现在耗着难受，还是新机会更吸引你？"
-    )
-    assert gateway_module.stream_bridge_fallback_response("我想聊聊") == "先说你最想聊的那一件。"
 
 
 def test_gateway_device_spoken_text_strips_low_value_voice_openers():
@@ -10265,3 +9820,24 @@ def test_gateway_background_result_survives_next_turn_and_waits_for_idle(monkeyp
     assert spoken and spoken[0][0].startswith("后台任务完成：北京明天多云")
     assert spoken[0][1] is False  # 播报时设备空闲
     assert not state.background_result_tasks
+
+
+def test_gateway_stream_bridge_no_longer_rewrites_model_replies():
+    assert gateway_module.stream_bridge_response_needs_guard("好呀，我在听。", transcript="想聊聊") is False
+    assert gateway_module.stream_bridge_response_needs_guard("最近状态啊，其实我", transcript="最近状态") is False
+    fallback = gateway_module.stream_bridge_fallback_response("我想聊聊最近状态")
+    assert "服务" in fallback and "日志" in fallback
+
+
+def test_gateway_stream_bridge_trims_incomplete_tail_only_when_a_full_sentence_exists():
+    trim = gateway_module.stream_bridge_trim_incomplete_tail
+    assert trim("最近状态可以先从工作节奏复盘。我看") == "最近状态可以先从工作节奏复盘。"
+    assert trim("最近状态啊，其实我") == "最近状态啊，其实我"
+    assert trim("今天挺好的。") == "今天挺好的。"
+
+
+def test_continue_listening_stops_when_the_turn_ends_the_dialogue():
+    state = gateway_module.TurnState(turn_id=1, audio_chunks=[])
+    state.metadata = {"continuous_dialogue": True}
+    assert gateway_module.continue_listening_for_device(state) is True
+    assert gateway_module.continue_listening_for_device(state, end_dialogue=True) is False

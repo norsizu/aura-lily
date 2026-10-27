@@ -185,7 +185,8 @@ def _resolve_query_context(
     normalized_raw = raw.translate(TEXT_NORMALIZE_TABLE)
     normalized_for_intent = raw_for_intent.translate(TEXT_NORMALIZE_TABLE)
     clean = re.sub(r"[\s，。！？、,.!?~～:：；;（）()“”\"'`]+", "", normalized_for_intent).lower()
-    has_weather = any(token in clean for token in ("天气", "天是怎么样", "天怎么样", "下雨", "气温", "温度", "多少度", "几度", "多少工", "冷不冷", "热不热", "带伞", "穿什么"))
+    # "天怎么样"不算：会把"你今天怎么样"当成问天气。
+    has_weather = any(token in clean for token in ("天气", "下雨", "气温", "温度", "多少度", "几度", "多少工", "冷不冷", "热不热", "带伞", "穿什么"))
     if "工资" in clean or "工时" in clean:
         has_weather = any(token in clean for token in ("天气", "下雨", "气温", "温度", "多少度", "几度", "冷不冷", "热不热", "带伞", "穿什么"))
     if has_weather and not is_weather_question(clean, raw_for_intent):

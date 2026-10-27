@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from threading import Thread
-from typing import Any, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from integrations.hermes_lily_cli.bridge import HermesLilyBridge, HermesLilyResult
 from integrations.hermes_lily_cli.runtime_config import load_hermes_provider_catalog
@@ -21,6 +21,8 @@ from .emotion_engine import (
     emotion_ledger_cause,
     emotion_mood_delta,
     resolve_turn_emotion,
+    strip_emotion_tag,
+    strip_mid_emotion_tags,
     write_emotion_state,
 )
 from .grounded_intent import classify_grounded_current_intent
@@ -42,6 +44,9 @@ from .pinned_notes import (
 from .query_context import correction_focus_text, resolve_query_context
 from .response_contract import (
     FALLBACK_SPOKEN_REPLY,
+    SERVICE_EMPTY_SPOKEN_REPLY,
+    SERVICE_ERROR_SPOKEN_REPLY,
+    SERVICE_RETRY_FAILED_SPOKEN_REPLY,
     normalize_spoken_reply,
 )
 from .runtime import CONFIGURED_VALUE_MARKER, AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
@@ -257,6 +262,23 @@ def _context_with_conversation_language(context: PersonaContext, language: str) 
 
 
 AUTO_PIN_AGENT_NOTES = False
+
+
+LOCAL_ACTION_REPLY_PATHS = frozenset(
+    {
+        # 定时提醒必须用本地确定性话术：模型自由发挥会答应根本没调度的时间。
+        "reminder_set",
+        "reminder_cancel",
+        "reminder_time_unclear",
+        # X3 便签：钉上/清空是确定性动作，本地确认话术即最终回复，
+        # 不进模型（模型会把"贴好了"讲成一段话）。
+        "note_pin",
+        "note_clear",
+        # 设备设置（休眠时间等）：没拿到设备回执就必须照实说，模型会顺口答"改好了"。
+        "device_setting_unsupported",
+        "device_setting_minutes_missing",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -610,6 +632,7 @@ class AuraPersonaGateway:
                 "why_trace": _self_why_trace_keys(setup_debug),
                 # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
                 "emotion": str(emotion_facts.get("emotion") or ""),
+                **({"end_dialogue": True} if emotion_tags.end_dialogue or user_text_ends_dialogue(user_text) else {}),
             },
         )
 
@@ -747,6 +770,7 @@ class AuraPersonaGateway:
             final_event: dict[str, Any] | None = None
             model_stream_text = ""
             emitted_model_chars = 0
+            audible_text = ""
             stream_timing: dict[str, Any] = {}
             first_raw_delta_ms = 0
             first_audible_delta_ms = 0
@@ -786,7 +810,7 @@ class AuraPersonaGateway:
                     or (value is not None and value is not False and value != "" and value != 0)
                 }
 
-            for event in DirectLlmClient(
+            for event in _stream_with_one_retry(lambda: DirectLlmClient(
                 DirectLlmConfig(
                     provider=self.runtime_config.aura_model_provider,
                     model=self.runtime_config.aura_model_model,
@@ -811,7 +835,7 @@ class AuraPersonaGateway:
                     "streamed": True,
                     "language": conversation_language,
                 },
-            ):
+            )):
                 if event.get("type") == "delta":
                     raw_delta = str(event.get("text") or "")
                     if isinstance(event.get("timing"), dict):
@@ -1094,7 +1118,9 @@ class AuraPersonaGateway:
                         break
                     continue
                 if event.get("type") == "final":
-                    final_event = event
+                    # 模型的 final 是原始拼接文本，情绪标签要和流式增量一样剥掉，否则会进字幕和历史。
+                    final_text, _ = strip_emotion_tag(str(event.get("response") or ""))
+                    final_event = {**event, "response": strip_mid_emotion_tags(final_text).strip()}
             # 标签只剩半截（或整段只有前导空白）时不会有可播文本，这里把缓冲收干净。
             emotion_tags.finish()
             if agent_marker_hit:
@@ -1151,41 +1177,35 @@ class AuraPersonaGateway:
                     limit=voice_char_limit,
                 )
                 final_repair_reason = ""
-                original_compacted_final = compacted_final
-                if _looks_like_provider_error_reply(final_response):
-                    compacted_final = _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn)
-                    final_repair_reason = "blocked_provider_error_reply"
-                elif _voice_stream_requires_complete_sentence(voice_turn):
-                    repaired_final = _safe_streamed_prefix_or_fallback(
-                        compacted_final,
-                        len(compacted_final),
-                        context=context,
-                        voice_turn=voice_turn,
+                final_failed = (final_event or {}).get("ok") is False
+                if final_failed or _looks_like_provider_error_reply(final_response):
+                    already_spoken = _trim_incomplete_streaming_tail(
+                        audible_text[:emitted_model_chars] if emitted_model_chars else ""
                     )
-                    if repaired_final.strip() != compacted_final.strip():
-                        final_repair_reason = _streaming_final_repair_reason_for_original(
-                            compacted_final
+                    if already_spoken:
+                        # 中途断流：已经播出去的半段就是这轮的回复，不再追加报错模板。
+                        compacted_final = already_spoken
+                        final_repair_reason = "service_error_after_partial"
+                    else:
+                        compacted_final = _service_error_spoken_reply(final_evidence)
+                        final_repair_reason = (
+                            "empty_model_response"
+                            if str(final_evidence.get("stop_reason") or "") == "empty_response"
+                            else "blocked_provider_error_reply"
                         )
-                        compacted_final = repaired_final
-                if final_repair_reason or _streaming_text_ends_with_incomplete_phrase(compacted_final):
-                    if not final_repair_reason:
-                        compacted_final = _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn)
-                        final_repair_reason = _streaming_final_repair_reason_for_original(
-                            original_compacted_final
-                        )
+                else:
+                    trimmed_final = _trim_incomplete_streaming_tail(compacted_final)
+                    if trimmed_final != compacted_final.strip():
+                        compacted_final = trimmed_final
+                        final_repair_reason = "trimmed_incomplete_tail"
+                if final_repair_reason:
                     repair_guard = {
                         "reason": final_repair_reason,
-                        "fallback_used": compacted_final == _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn),
+                        "fallback_used": final_repair_reason in {"empty_model_response", "blocked_provider_error_reply"},
+                        "service_error": final_repair_reason in {"empty_model_response", "blocked_provider_error_reply"},
                         "final_response_repaired": True,
                         "decision_path": str((voice_turn.debug or {}).get("decision_path") or ""),
                     }
-                    if _stream_quality_guard_should_force_fallback(repair_guard, stop_reason="voice_quality_guard"):
-                        compacted_final = _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn)
-                        repair_guard = {
-                            **repair_guard,
-                            "fallback_used": True,
-                            "forced_terminal_fallback": True,
-                        }
                     final_evidence = {
                         **final_evidence,
                         **stream_evidence({
@@ -1196,8 +1216,8 @@ class AuraPersonaGateway:
                     }
                     final_event = {
                         **(final_event or {}),
-                        "ok": bool((final_event or {}).get("ok")) if str((final_event or {}).get("status") or "") == "failed" else bool(compacted_final.strip()),
-                        "status": str((final_event or {}).get("status") or "") if str((final_event or {}).get("status") or "") == "failed" else ("completed" if compacted_final.strip() else "failed"),
+                        "ok": False if final_failed and repair_guard["service_error"] else bool(compacted_final.strip()),
+                        "status": "failed" if final_failed and repair_guard["service_error"] else ("completed" if compacted_final.strip() else "failed"),
                         "response": compacted_final,
                         "evidence": final_evidence,
                     }
@@ -1388,26 +1408,15 @@ class AuraPersonaGateway:
                 # E4：网关从这里取情绪填 dialogue.payload.emotion 和 TTS 语气。
                 **({"emotion": str(emotion_facts.get("emotion") or "")} if emotion_facts else {}),
                 **({"quality_guard": quality_guard} if quality_guard else {}),
+                # 模型判断用户想收尾（<emo:X|end>）：网关据此让设备说完这句就挂断，不再续听。
+                **({"end_dialogue": True} if emotion_tags.end_dialogue or user_text_ends_dialogue(user_text) else {}),
             },
         )
         yield {"type": "final", "payload": result.to_dict()}
 
     def _should_stream_with_local_preface(self, voice_turn: VoiceTurnResult) -> bool:
-        if not voice_turn.speak_text.strip():
-            return False
-        if voice_turn.background_task:
-            return False
-        if _voice_turn_has_local_complete(voice_turn):
-            return False
-        if not self.runtime_config.fast_reply_enabled:
-            return False
-        decision_path = str((voice_turn.debug or {}).get("decision_path") or "")
-        return decision_path in {
-            "cached_weather_advice",
-            "state_mood",
-            "outing_weather_advice",
-            "local_social",
-        } or _voice_turn_can_use_conversational_preface(voice_turn)
+        # 问答一律由模型从头说：规则拼的开场白会把缓存数据或套话塞到她嘴里。
+        return False
 
     def _should_use_local_voice_reply(self, voice_turn: VoiceTurnResult, *, voice_low_latency: bool = True) -> bool:
         if not voice_turn.speak_text.strip():
@@ -1417,44 +1426,10 @@ class AuraPersonaGateway:
         decision_path = str((voice_turn.debug or {}).get("decision_path") or "")
         if not voice_low_latency and decision_path == "local_social":
             return False
-        if _voice_turn_has_local_complete(voice_turn):
-            return True
-        if decision_path in {
-            "cached_weather",
-            "cached_weather_advice",
-            "weather_unavailable",
-            "weather_advice_unavailable",
-            "current_time",
-            "current_time_weather",
-            "explicit_fixed_reply",
-            "grounded_current_activity",
-            "grounded_current_location",
-            "state_mood",
-            "outing_weather_advice",
-            # 定时提醒必须用本地确定性话术：模型自由发挥会答应根本没调度的时间。
-            "reminder_set",
-            "reminder_cancel",
-            "reminder_time_unclear",
-            # X3 便签：钉上/清空是确定性动作，本地确认话术即最终回复，
-            # 不进模型（模型会把"贴好了"讲成一段话）。
-            "note_pin",
-            "note_clear",
-            # 设备设置（休眠时间等）：没拿到设备回执就必须照实说，模型会顺口答"改好了"。
-            "device_setting_unsupported",
-            "device_setting_minutes_missing",
-        }:
-            return True
-        if decision_path in {"supportive_chat"}:
-            return False
-        if not self.runtime_config.fast_reply_enabled:
-            return False
-        if self.runtime_config.fast_reply_mode != "local_rule":
-            return False
-        return voice_turn.verdict in {
-            VoiceTurnVerdict.SPEAK_NOW,
-            VoiceTurnVerdict.CLARIFY_NOW,
-            VoiceTurnVerdict.REFUSE_NOW,
-        }
+        # 只有确定性动作才用本地话术；时间、天气、心情、在哪在干嘛这类问答全部交给模型，
+        # 缓存的日期和天气只进面板和模型上下文，不再直接念给用户（"你今天怎么样"曾被当成问天气）。
+        return decision_path in LOCAL_ACTION_REPLY_PATHS
+
 
     def _should_enqueue_background_task(self, voice_turn: VoiceTurnResult) -> bool:
         if not self.runtime_config.ack_and_enqueue_enabled:
@@ -2549,117 +2524,37 @@ def _guard_model_spoken_reply(
     context: PersonaContext,
     voice_turn: VoiceTurnResult | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    # 只拦服务本身的故障（空回复 / 接口报错）和逐句重复；模型的正常回答原样放行。
     response = str(text or "").strip()
-    if not response:
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {"reason": "empty_after_contract", "fallback_used": True}
     path = str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or "")
+    if not response:
+        return SERVICE_EMPTY_SPOKEN_REPLY, {
+            "reason": "empty_after_contract",
+            "fallback_used": True,
+            "service_error": True,
+            "decision_path": path,
+        }
     if _looks_like_provider_error_reply(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
+        return SERVICE_ERROR_SPOKEN_REPLY, {
             "reason": "blocked_provider_error_reply",
             "fallback_used": True,
+            "service_error": True,
             "decision_path": path,
         }
-    if path == "status_review_entry":
-        stripped_status_opening = _strip_low_value_status_opening(response)
-        if stripped_status_opening:
-            stripped_guard = _quality_guard_reason_for_spoken_reply(
-                stripped_status_opening,
-                context=context,
-                voice_turn=voice_turn,
-                path=path,
-            )
-            if stripped_guard:
-                return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-                    "reason": stripped_guard,
-                    "fallback_used": True,
-                    "decision_path": path,
-                    "after_low_value_status_opening_removed": True,
-                }
-            return stripped_status_opening, {
-                "reason": "removed_low_value_status_opening",
-                "fallback_used": False,
-                "decision_path": path,
-            }
-    if _reply_hallucinates_aura_self_state(response, context=context, voice_turn=voice_turn):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_aura_self_state_hallucination",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if _reply_makes_unfounded_user_state_claim(response, context=context, voice_turn=voice_turn):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_unfounded_user_state_claim",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if _streaming_text_ends_with_incomplete_phrase(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_incomplete_streaming_reply",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if _looks_like_action_or_stage_direction(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_action_or_stage_direction",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if path == "supportive_chat" and _supportive_continuation_is_unsafe(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_unsafe_supportive_reply",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if _casual_continuation_is_placeholder(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_placeholder_reply",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if _reply_is_too_vague_for_user_text(response, context=context, voice_turn=voice_turn):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_vague_reply",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    if path == "casual_chat_preface" and _casual_continuation_is_unfounded_guess(response):
-        return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-            "reason": "blocked_unfounded_casual_guess",
-            "fallback_used": True,
-            "decision_path": path,
-        }
-    repeated_guard: dict[str, Any] = {}
     deduped_response = _dedupe_repeated_spoken_sentences(response)
-    if deduped_response != response:
-        response = deduped_response
-        if not response:
-            return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-                "reason": "empty_after_repeated_sentence_removed",
-                "fallback_used": True,
-                "decision_path": path,
-            }
-        repeated_guard = {
-            "reason": "removed_repeated_sentence",
-            "fallback_used": False,
+    if deduped_response == response:
+        return response, {}
+    if not deduped_response:
+        return SERVICE_EMPTY_SPOKEN_REPLY, {
+            "reason": "empty_after_repeated_sentence_removed",
+            "fallback_used": True,
+            "service_error": True,
             "decision_path": path,
         }
-    forbidden = _world_forbidden_reply_tokens(context)
-    matched = [token for token in forbidden if token and token in response]
-    if not matched:
-        return response, repeated_guard
-    kept = _drop_sentences_with_tokens(response, matched)
-    if kept:
-        return kept, {
-            "reason": "removed_world_background_sentence",
-            "matched_tokens": matched[:8],
-            "fallback_used": False,
-            "decision_path": str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or ""),
-        }
-    return _quality_fallback_spoken_reply(context=context, voice_turn=voice_turn), {
-        "reason": "blocked_world_background_leak",
-        "matched_tokens": matched[:8],
-        "fallback_used": True,
-        "decision_path": str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or ""),
+    return deduped_response, {
+        "reason": "removed_repeated_sentence",
+        "fallback_used": False,
+        "decision_path": path,
     }
 
 
@@ -2673,70 +2568,17 @@ def _quality_guard_reason_for_spoken_reply(
     response = str(text or "").strip()
     if not response:
         return "empty_after_contract"
-    if _reply_hallucinates_aura_self_state(response, context=context, voice_turn=voice_turn):
-        return "blocked_aura_self_state_hallucination"
-    if _reply_makes_unfounded_user_state_claim(response, context=context, voice_turn=voice_turn):
-        return "blocked_unfounded_user_state_claim"
-    if _streaming_text_ends_with_incomplete_phrase(response):
-        return "blocked_incomplete_streaming_reply"
-    if _looks_like_action_or_stage_direction(response):
-        return "blocked_action_or_stage_direction"
-    if path == "supportive_chat" and _supportive_continuation_is_unsafe(response):
-        return "blocked_unsafe_supportive_reply"
-    if _casual_continuation_is_placeholder(response):
-        return "blocked_placeholder_reply"
-    if _reply_is_too_vague_for_user_text(response, context=context, voice_turn=voice_turn):
-        return "blocked_vague_reply"
-    if path == "casual_chat_preface" and _casual_continuation_is_unfounded_guess(response):
-        return "blocked_unfounded_casual_guess"
-    if any(token for token in _world_forbidden_reply_tokens(context) if token and token in response):
-        return "blocked_world_background_leak"
+    if _looks_like_provider_error_reply(response):
+        return "blocked_provider_error_reply"
     return ""
 
 
 def _stream_quality_guard_should_wait(guard: dict[str, Any]) -> bool:
-    reason = str((guard or {}).get("reason") or "")
-    if reason == "empty_after_contract":
-        return True
-    if reason == "blocked_incomplete_streaming_reply":
-        return True
-    path = str((guard or {}).get("decision_path") or "")
-    if reason == "blocked_vague_reply" and path == "status_review_entry":
-        return True
-    if path == "casual_chat_preface" and reason in {
-        "blocked_placeholder_reply",
-        "blocked_vague_reply",
-        "blocked_aura_self_state_hallucination",
-        "blocked_unfounded_casual_guess",
-        "blocked_unfounded_user_state_claim",
-    }:
-        return True
-    return False
+    return str((guard or {}).get("reason") or "") == "empty_after_contract"
 
 
 def _stream_quality_guard_should_force_fallback(guard: dict[str, Any], *, stop_reason: str = "") -> bool:
-    reason = str((guard or {}).get("reason") or "")
-    if not reason:
-        return False
-    if reason == "blocked_incomplete_streaming_reply":
-        return True
-    if str(stop_reason or "").strip() == "voice_quality_guard_after_partial":
-        return reason in {
-            "blocked_unfounded_user_state_claim",
-            "blocked_unsafe_supportive_reply",
-            "blocked_incomplete_streaming_reply",
-            "blocked_aura_self_state_hallucination",
-            "blocked_unfounded_casual_guess",
-            "blocked_placeholder_reply",
-            "blocked_vague_reply",
-        }
-    return bool(guard.get("fallback_used")) and reason in {
-        "blocked_unfounded_user_state_claim",
-        "blocked_unsafe_supportive_reply",
-        "blocked_incomplete_streaming_reply",
-        "blocked_aura_self_state_hallucination",
-        "blocked_unfounded_casual_guess",
-    }
+    return bool((guard or {}).get("service_error"))
 
 
 def _stream_quality_guard_allows_waiting_delta(guard: dict[str, Any], text: str) -> bool:
@@ -2749,10 +2591,7 @@ def _status_review_stream_should_wait_for_completion(
     raw_text: str,
     voice_turn: VoiceTurnResult | None,
 ) -> bool:
-    path = str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or "")
-    if path != "status_review_entry":
-        return False
-    return not bool(_first_streaming_sentence(audible_text, include_partial=False))
+    return False
 
 
 def _fallback_spoken_reply_for_voice_turn(voice_turn: VoiceTurnResult | None) -> str:
@@ -2763,66 +2602,75 @@ def _fallback_spoken_reply_for_voice_turn(voice_turn: VoiceTurnResult | None) ->
     return FALLBACK_SPOKEN_REPLY
 
 
+# 收尾意图兜底：模型的 <emo:X|end> 不总是打得准，用户整句都是道别时直接判定结束对话。
+# 每个分句都得是道别/语气词才算，"回头你提醒我买牛奶""我该不该先这样做"不会误伤。
+_GOODBYE_CLAUSE_RE = re.compile(
+    r"^(?:好了|好的|好|行|嗯|那|那就|那我|那先|ok|okay)?"
+    r"(?:"
+    r"(?:那就|那)?先这样(?:吧|哈|啦|了|子)?"
+    r"|(?:我们|咱们)?(?:回头|晚点|晚些|下次|改天|有空|明天|待会儿?)(?:再|咱们再|我们再)?(?:聊|说|见|找你|找你聊)(?:吧|哈|啦|了)?"
+    r"|(?:我)?(?:要|得|准备)?(?:先)?(?:去忙|去睡|去睡觉|睡|撤|走|下)了(?:啊|哈|呀)?"
+    r"|(?:先)?不(?:聊|说)了(?:吧|哈|啊)?"
+    r"|(?:那)?(?:今天|今晚|先)?(?:就)?(?:聊|说)到这(?:儿|里)?(?:吧|了|啦)?"
+    r"|拜拜|拜|再见|回见|晚安|886|88|bye|byebye|goodbye|good night"
+    r")(?:啊|哈|呀|啦|咯|喽|哦)?$",
+    re.IGNORECASE,
+)
+# 道别前后常带的客气话/应答词，单独成句时放行，但本身不算收尾。
+_GOODBYE_FILLER_RE = re.compile(r"^(?:(?:好了|好的|好|行|嗯|ok|okay|谢谢你?|谢啦|辛苦了|那)(?:啊|哈|呀|啦|咯|喽|哦)?)+$", re.IGNORECASE)
+
+
+def user_text_ends_dialogue(text: str) -> bool:
+    value = str(text or "").strip().lower()
+    if not value or len(value) > 24:
+        return False
+    clauses = [item.strip() for item in re.split(r"[，,。.!！?？~～、；;\s]+", value) if item.strip()]
+    if not clauses or not all(_GOODBYE_CLAUSE_RE.match(item) or _GOODBYE_FILLER_RE.match(item) for item in clauses):
+        return False
+    # 光说"好的""谢谢"不算收尾，至少要有一个真正的道别句。
+    return any(_GOODBYE_CLAUSE_RE.match(item) for item in clauses)
+
+
+def _stream_with_one_retry(make_stream: Callable[[], Iterable[dict[str, Any]]]) -> Iterator[dict[str, Any]]:
+    """模型一个字没吐就失败（接口报错 / 空回复）时自动重试一次，attempts 记进证据供 X-Ray 查看。"""
+    attempts = 0
+    while True:
+        attempts += 1
+        emitted = False
+        for event in make_stream():
+            if event.get("type") == "final":
+                evidence = dict(event.get("evidence") or {})
+                failed = event.get("ok") is False or _looks_like_provider_error_reply(str(event.get("response") or ""))
+                if failed and not emitted and attempts < 2:
+                    break
+                evidence["aura_llm_attempts"] = attempts
+                if attempts > 1:
+                    evidence["aura_llm_first_attempt_failed"] = True
+                yield {**event, "evidence": evidence}
+                return
+            if event.get("type") == "delta" and str(event.get("text") or "").strip():
+                emitted = True
+            yield event
+        else:
+            return
+
+
+def _service_error_spoken_reply(evidence: dict[str, Any] | None) -> str:
+    payload = evidence if isinstance(evidence, dict) else {}
+    if int(payload.get("aura_llm_attempts") or 1) > 1:
+        return SERVICE_RETRY_FAILED_SPOKEN_REPLY
+    if str(payload.get("stop_reason") or "") == "empty_response":
+        return SERVICE_EMPTY_SPOKEN_REPLY
+    return SERVICE_ERROR_SPOKEN_REPLY
+
+
 def _quality_fallback_spoken_reply(
     *,
     context: PersonaContext,
     voice_turn: VoiceTurnResult | None = None,
 ) -> str:
-    path = str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or "")
-    if _user_topic_is_job_change(context):
-        return _pick_quality_fallback(
-            context,
-            [
-                "换工作这件事先拆开看：是现在耗着难受，还是新机会更吸引你？",
-                "可以聊。先看动因：是不想留了，还是想要更好的机会？",
-                "这事值得认真想，先说你最在意的：发展、收入，还是现在待着太消耗？",
-            ],
-        )
-    if _user_topic_needs_specific_anchor(context):
-        return _pick_quality_fallback(
-            context,
-            [
-                "从工作节奏说起：是事情太满，还是提不起劲？",
-                "先把状态拆小一点：工作量、睡眠，还是提不起劲？",
-                "先看最卡的一块：事情太满，还是心劲不够？",
-            ],
-        )
-    if path == "casual_chat_preface":
-        text = str(voice_turn.speak_text or "").strip()
-        options = [
-            text,
-            "先说你最想聊的那一件。",
-            "先从最挂心的地方说。",
-            "先说最近最占心的那一块。",
-        ]
-        return _pick_quality_fallback(context, options)
-    if path == "supportive_chat":
-        text = str(voice_turn.speak_text or "").strip()
-        options = [
-            text,
-            "我在，先把话说慢一点。",
-            "好，我陪你。先说最难受的那一处。",
-            "先缓一口气，我听你说。",
-        ]
-        return _pick_quality_fallback(context, options)
-    if path == "local_social":
-        text = str(voice_turn.speak_text or "").strip()
-        if text:
-            return _pick_quality_fallback(context, [text])
-        return FALLBACK_SPOKEN_REPLY
-    if path in {"normal_chat", ""}:
-        return _fallback_spoken_reply_for_voice_turn(voice_turn)
-    fallback = _fallback_spoken_reply_for_voice_turn(voice_turn)
-    if fallback and fallback != FALLBACK_SPOKEN_REPLY:
-        return _pick_quality_fallback(context, [fallback])
-    return _pick_quality_fallback(
-        context,
-        [
-            "我刚才没接稳，你换个说法再问我一次。",
-            "这句我没接准，你再说一遍。",
-            FALLBACK_SPOKEN_REPLY,
-        ],
-    )
+    # 不再用话题模板冒充 Aura 的回答：走到这里一定是服务出了问题，要让用户知道。
+    return SERVICE_ERROR_SPOKEN_REPLY
 
 
 def _pick_quality_fallback(context: PersonaContext, options: list[str]) -> str:
@@ -3163,8 +3011,18 @@ def _next_safe_voice_stream_delta(
 
 
 def _voice_stream_requires_complete_sentence(voice_turn: VoiceTurnResult | None) -> bool:
-    path = str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or "")
-    return path in {"supportive_chat", "status_review_entry"}
+    # 质检已拆：所有路径都按稳定分段直接流出，不再按整句扣住等审查。
+    return False
+
+
+def _trim_incomplete_streaming_tail(text: str) -> str:
+    """结尾半截时退回到最后一个完整句；一句完整的都没有就原样保留，绝不换成模板。"""
+    response = str(text or "").strip()
+    if not response or not _streaming_text_ends_with_incomplete_phrase(response):
+        return response
+    safe_end = _last_complete_streaming_sentence_end(response)
+    trimmed = response[:safe_end].strip() if safe_end > 0 else ""
+    return trimmed or response
 
 
 def _last_complete_streaming_sentence_end(text: str) -> int:
@@ -4133,6 +3991,9 @@ def _supportive_continuation_is_unsafe(text: str) -> bool:
     return any(token in value for token in blocked)
 
 
+PLACEHOLDER_REST_MAX_CHARS = 4
+
+
 def _casual_continuation_is_placeholder(text: str) -> bool:
     key = _dedupe_key(text)
     if not key:
@@ -4202,8 +4063,19 @@ def _casual_continuation_is_placeholder(text: str) -> bool:
         "你从哪开始聊都行",
         "发生什么了",
         "怎么了",
+        "那我就听着",
+        "我就听着",
+        "你想从哪儿开始讲",
+        "你想从哪开始讲",
     )
-    return any(token in key for token in placeholders)
+    # 整句基本只有这些套话才算占位；"大家好呀！我是豆豆"里带个"好呀"是正经回答，
+    # 以前按子串命中会把整句换成兜底"我在。"。
+    if not any(token in key for token in placeholders):
+        return False
+    rest = key
+    for token in sorted(placeholders, key=len, reverse=True):
+        rest = rest.replace(token, "")
+    return len(rest) <= PLACEHOLDER_REST_MAX_CHARS
 
 
 def _casual_chat_stream_should_wait_first_sentence(
@@ -4211,37 +4083,6 @@ def _casual_chat_stream_should_wait_first_sentence(
     *,
     voice_turn: VoiceTurnResult | None,
 ) -> bool:
-    path = str(((voice_turn.debug if voice_turn else {}) or {}).get("decision_path") or "")
-    if path not in {"casual_chat_preface", "supportive_chat"}:
-        return False
-    value = str(text or "").strip()
-    if not value:
-        return False
-    key = _dedupe_key(value)
-    if not key:
-        return False
-    first_sentence = _first_streaming_sentence(value, include_partial=False)
-    if not first_sentence:
-        return True
-    first_key = _dedupe_key(first_sentence)
-    if first_key in {
-        "那我就在这儿陪着你",
-        "那我就在这陪着你",
-        "我就在这儿陪着你",
-        "我就在这陪着你",
-        "我在这儿陪着你",
-        "我在这陪着你",
-        "在这儿陪着你",
-        "在这陪着你",
-        "陪着你",
-        "正好我也闲着",
-        "我也闲着",
-    }:
-        return True
-    if key.startswith(first_key) and len(key) > len(first_key):
-        tail_key = key[len(first_key):]
-        if any(token in tail_key for token in ("你想从哪", "想从哪", "聊点什么", "想聊点什么")):
-            return True
     return False
 
 

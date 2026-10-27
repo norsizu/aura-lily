@@ -67,7 +67,11 @@ try:
         read_pinned_notes,
     )
     from integrations.aura_persona_gateway.query_context import resolve_query_context
-    from integrations.aura_persona_gateway.response_contract import normalize_spoken_reply
+    from integrations.aura_persona_gateway.response_contract import (
+        SERVICE_EMPTY_SPOKEN_REPLY,
+        SERVICE_ERROR_SPOKEN_REPLY,
+        normalize_spoken_reply,
+    )
     from integrations.aura_persona_gateway.runtime import AuraRuntimeConfig, cached_weather_snapshot, load_aura_runtime_config
     from integrations.aura_persona_gateway.desserts import apply_dessert_purchase
     from integrations.aura_persona_gateway.state_rules import apply_time_recovery, compute_affinity_level
@@ -111,6 +115,8 @@ except ImportError:  # pragma: no cover - tiny builds can run the HTTP bridge on
     load_persona_config = None
     normalize_emotion = None
     normalize_spoken_reply = None
+    SERVICE_EMPTY_SPOKEN_REPLY = "大模型刚才没返回消息咧。换个问法再试试，还不行就去查后台日志吧。"
+    SERVICE_ERROR_SPOKEN_REPLY = "服务接口刚才报错了咧。换个说法再问问看，还是不行请检查后台日志。"
     open_pooled_http_request = None
     resolve_query_context = None
     refresh_cached_weather_if_needed = None
@@ -230,6 +236,13 @@ STEPFUN_WS_TTS_429_COOLDOWN_SECONDS = _env_float(
     minimum=0.0,
     maximum=300.0,
 )
+# 开播前缓冲：合成比实时慢时，设备 512ms 预取会被吃空、说几个字卡一下。
+# 先攒够 HOLD_MS，再按已送文字量和实测合成速度补足差额；整句合成完或等满 MAX_WAIT_MS 立即放行。
+TTS_START_HOLD_MS = _env_int("AURA_TTS_START_HOLD_MS", 1000, minimum=0)
+TTS_START_HOLD_MAX_WAIT_MS = _env_int("AURA_TTS_START_HOLD_MAX_WAIT_MS", 3500, minimum=0)
+TTS_START_HOLD_MIN_SAMPLE_MS = _env_int("AURA_TTS_START_HOLD_MIN_SAMPLE_MS", 400, minimum=0)
+TTS_START_HOLD_MS_PER_CHAR = _env_int("AURA_TTS_START_HOLD_MS_PER_CHAR", 220, minimum=50)
+TTS_START_HOLD_MARGIN_MS = _env_int("AURA_TTS_START_HOLD_MARGIN_MS", 300, minimum=0)
 STEPFUN_WS_TTS_WAIT_FIRST_AUDIO = _env_bool("AURA_TTS_STEPFUN_WS_WAIT_FIRST_AUDIO", False)
 STEPFUN_WS_TTS_FIRST_AUDIO_WAIT_MS = _env_int("AURA_TTS_STEPFUN_WS_FIRST_AUDIO_WAIT_MS", 1200, minimum=0)
 STEPFUN_WS_TTS_FIRST_SEGMENT_READY_WAIT_MS = _env_int("AURA_TTS_STEPFUN_WS_FIRST_SEGMENT_READY_WAIT_MS", 300, minimum=0)
@@ -1233,7 +1246,12 @@ def _start_payload(payload: dict[str, Any], body: dict[str, Any]) -> dict[str, A
     return merged
 
 
-def continue_listening_for_device(state: TurnState, *, deferred: bool = False) -> bool:
+def continue_listening_for_device(
+    state: TurnState,
+    *,
+    deferred: bool = False,
+    end_dialogue: bool = False,
+) -> bool:
     """Return the session opt-in without changing legacy clients.
 
     Continuous capture is a device/session capability, not a global gateway
@@ -1242,8 +1260,11 @@ def continue_listening_for_device(state: TurnState, *, deferred: bool = False) -
 
     后台任务进行中（回“我去查一下”那句、或者结果回传那句）不续听：
     设备回到待机亮 WORK 面板，结果回来直接播，不会撞上自动开的空录音轮。
+
+    用户说“回头再聊/拜拜”这类收尾的话时（模型在情绪标签里写 |end）也不续听：
+    这句道别说完设备直接回待机，不用用户再手动取消空录音轮。
     """
-    if deferred or any(not task.done() for task in getattr(state, "background_result_tasks", ()) or ()):
+    if end_dialogue or deferred or any(not task.done() for task in getattr(state, "background_result_tasks", ()) or ()):
         return False
     metadata = state.metadata if isinstance(state.metadata, dict) else {}
     return _coerce_bool(
@@ -1817,7 +1838,7 @@ async def _run_voice_turn(websocket: Any, config: GatewayConfig, state: TurnStat
     )
     response = str(bridge_result.get("response") or "").strip()
     if not response:
-        response = "回复生成失败了，你再试一次。"
+        response = SERVICE_EMPTY_SPOKEN_REPLY
     evidence = bridge_result.get("evidence") if isinstance(bridge_result.get("evidence"), dict) else {}
     await send_dialogue_and_tts(
         websocket,
@@ -2751,7 +2772,11 @@ async def send_dialogue_and_tts(
             "scene": dialogue_scene({"evidence": bridge_evidence or {}}),
             "coins_earned": max(0, int(coins_earned or 0)),
             "deferred": bool(deferred),
-            "continue_listening": continue_listening_for_device(state, deferred=bool(deferred)),
+            "continue_listening": continue_listening_for_device(
+                state,
+                deferred=bool(deferred),
+                end_dialogue=bool((bridge_evidence or {}).get("end_dialogue")),
+            ),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,
@@ -6140,6 +6165,11 @@ class StepfunWsTtsSession:
         self._slot: asyncio.Semaphore | None = None
         # 本轮情绪（E1 值）；预热会话建好后才知道，由流式调用方在送字前设置。
         self.emotion = ""
+        self.text_chars = 0
+        self._holding = TTS_START_HOLD_MS > 0
+        self._hold_chunks: list[bytes] = []
+        self._hold_bytes = 0
+        self._hold_first_at = 0.0
 
     def is_healthy(self) -> bool:
         if self.error_detail:
@@ -6203,6 +6233,7 @@ class StepfunWsTtsSession:
         if not self.first_text_ms:
             self.first_text_ms = _elapsed_ms(self.started)
         self.text_count += 1
+        self.text_chars += len(clean)
         clean = stepfun_emotion_text(self.runtime_config, clean, self.emotion)
         await self._step_ws.send(json.dumps(
             {"type": "tts.text.delta", "data": {"session_id": self.session_id, "text": clean}},
@@ -6231,6 +6262,7 @@ class StepfunWsTtsSession:
             # _receive_loop already applies an idle timeout to each recv. A total
             # timeout here truncates healthy long-form synthesis.
             await self._receiver_task
+        await self._release_hold("finish")
         await self.close()
         if is_final and (self.audio_bytes or not self.error_detail):
             await send_tts_binary(self.websocket, self.turn_id, b"", stream_id=self.stream_id, is_final=True)
@@ -6300,6 +6332,7 @@ class StepfunWsTtsSession:
                     if not self.audio_bytes:
                         await self._send_audio_delta(data)
                     self.done_seen = True
+                    await self._release_hold("done")
                     return
         except asyncio.CancelledError:
             raise
@@ -6318,7 +6351,21 @@ class StepfunWsTtsSession:
         if not pcm:
             return
         device_audio = _tts_audio_for_device(pcm, source_rate=self.source_rate)
-        frame_count = (len(device_audio) + TTS_CHUNK_BYTES - 1) // TTS_CHUNK_BYTES
+        self.audio_bytes += len(device_audio)
+        if not self.first_audio_abs_ms:
+            self.first_audio_abs_ms = _elapsed_ms(self.started)
+            self.first_audio_event.set()
+        if self._holding:
+            if not self._hold_chunks:
+                self._hold_first_at = time.monotonic()
+            self._hold_chunks.append(device_audio)
+            self._hold_bytes += len(device_audio)
+            if self._hold_ready():
+                await self._release_hold("ready")
+            return
+        await self._send_device_audio(device_audio)
+
+    async def _send_device_audio(self, device_audio: bytes) -> None:
         await send_tts_pcm_stream(
             self.websocket,
             self.turn_id,
@@ -6327,11 +6374,37 @@ class StepfunWsTtsSession:
             is_final=False,
             timing=self.audio_timing,
         )
-        self.audio_bytes += len(device_audio)
-        self.audio_chunk_count += frame_count
-        if not self.first_audio_abs_ms:
-            self.first_audio_abs_ms = _elapsed_ms(self.started)
-            self.first_audio_event.set()
+        self.audio_chunk_count += (len(device_audio) + TTS_CHUNK_BYTES - 1) // TTS_CHUNK_BYTES
+
+    def _hold_ready(self) -> bool:
+        buffered_ms = pcm16_mono_duration_ms(self._hold_bytes)
+        wall_ms = (time.monotonic() - self._hold_first_at) * 1000
+        if wall_ms >= TTS_START_HOLD_MAX_WAIT_MS:
+            return True
+        if buffered_ms < TTS_START_HOLD_MS or wall_ms < TTS_START_HOLD_MIN_SAMPLE_MS:
+            return False
+        # 合成速度 rate<1 时，剩下的部分会越播越欠；提前攒够差额。
+        rate = min(1.0, buffered_ms / max(1.0, wall_ms))
+        est_total_ms = self.text_chars * TTS_START_HOLD_MS_PER_CHAR
+        return buffered_ms >= est_total_ms * (1.0 - rate) + TTS_START_HOLD_MARGIN_MS
+
+    async def _release_hold(self, reason: str) -> None:
+        if not self._holding:
+            return
+        self._holding = False
+        chunks, self._hold_chunks = self._hold_chunks, []
+        if not chunks:
+            return
+        log_gateway(
+            "stepfun_ws_tts_hold_release",
+            turn_id=self.turn_id,
+            reason=reason,
+            buffered_ms=pcm16_mono_duration_ms(self._hold_bytes),
+            wait_ms=int((time.monotonic() - self._hold_first_at) * 1000),
+            text_chars=self.text_chars,
+        )
+        for chunk in chunks:
+            await self._send_device_audio(chunk)
 
 
 async def start_stepfun_ws_tts_session(
@@ -6540,7 +6613,7 @@ def stepfun_realtime_instructions(runtime_config: Any) -> str:
         f"{language_instruction}"
         "优先快：通常一句话，最多两小句；先回答核心问题。"
         "这是普通语音对话，不是翻译、复述、改写或朗读任务；除非用户明确要求翻译，否则绝对不要说“帮你翻译成英文”。"
-        "如果用户问天气、温度或今天怎么样，必须直接根据已给的天气缓存回答；不要说“我来查/这就帮你查”。"
+        "如果用户问天气或温度，必须直接根据已给的天气缓存回答（“你今天怎么样”是在问你过得如何，不是问天气）；不要说“我来查/这就帮你查”。"
         "没有缓存时才说暂时没拿到实时天气。"
         f"{weather_line}"
         "不要输出括号动作、舞台提示、心理描写、Markdown 或项目符号。"
@@ -6590,7 +6663,7 @@ def device_spoken_text(text: str, *, allow_fallback: bool = True) -> str:
     clean = clean.strip(" -—:：")
     if not clean and not allow_fallback:
         return ""
-    return _dedupe_repeated_spoken_text(_strip_low_value_voice_openers(clean or "我在。", drop_pure_filler=not allow_fallback))
+    return _dedupe_repeated_spoken_text(_strip_low_value_voice_openers(clean or SERVICE_EMPTY_SPOKEN_REPLY, drop_pure_filler=not allow_fallback))
 
 
 def _strip_low_value_voice_openers(text: str, *, drop_pure_filler: bool = False) -> str:
@@ -7598,8 +7671,9 @@ async def stream_dialogue_and_tts_from_bridge(
             )
             else fallback_response
         )
+    response = stream_bridge_trim_incomplete_tail(response)
     if not response:
-        response = "回复生成失败了，你再试一次。"
+        response = SERVICE_EMPTY_SPOKEN_REPLY
     spoken_response = device_spoken_text(response)
     if state.supports_local_audio:
         localized = match_local_audio(spoken_response, state.language)
@@ -7670,7 +7744,11 @@ async def stream_dialogue_and_tts_from_bridge(
             "scene": dialogue_scene(final_payload),
             "coins_earned": 0,
             "deferred": bool(evidence.get("deferred")),
-            "continue_listening": continue_listening_for_device(state, deferred=bool(evidence.get("deferred"))),
+            "continue_listening": continue_listening_for_device(
+                state,
+                deferred=bool(evidence.get("deferred")),
+                end_dialogue=bool(evidence.get("end_dialogue")),
+            ),
             **({"local_audio_id": local_audio_id} if local_audio_id else {}),
             "timing": {
                 "asr_ms": state.asr_latency_ms,
@@ -8533,25 +8611,8 @@ def _stream_tts_status_reply_is_topic_echo(text: str) -> bool:
 
 
 def stream_bridge_response_needs_guard(text: str, *, transcript: str = "") -> bool:
-    if not str(text or "").strip():
-        return False
-    if _stream_tts_segment_is_incomplete(text, remainder=""):
-        return True
-    if _stream_tts_response_is_empty_opening(text, transcript=transcript):
-        return True
-    if _stream_tts_response_makes_unfounded_user_claim(text, transcript=transcript):
-        return True
-    user_text = str(transcript or "")
-    if _stream_bridge_status_like_transcript(user_text):
-        if _stream_tts_response_has_unfinished_tail(text):
-            return True
-        if _stream_tts_status_reply_lacks_actionable_anchor(text):
-            return True
-        if _stream_tts_response_is_vague_status(text):
-            return True
-        cleaned = str(text or "").strip()
-        if re.search(r"(?:其实[你我]?|感觉[你我]?|看你这|我看|我觉得|我猜你|听得出来|看得出来)[，,。！？!?、；;：: ]*$", cleaned):
-            return True
+    # 内容质检已拆（turn.py 只拦服务故障）：网关不再扣住或替换模型的正常回答，
+    # 半截尾巴由 flush_stream_tts_segments 的分段逻辑处理。
     return False
 
 
@@ -8656,15 +8717,19 @@ def stream_bridge_requires_complete_first_sentence(*, transcript: str = "", firs
     return _stream_bridge_requires_complete_first_sentence_transcript(user_text)
 
 
+def stream_bridge_trim_incomplete_tail(text: str) -> str:
+    """结尾半截时退回到最后一个完整句（和分段播报丢掉的尾巴对齐）；没有完整句就原样保留。"""
+    value = str(text or "").strip()
+    if not value or not _stream_tts_segment_is_incomplete(value, remainder=""):
+        return value
+    ends = [match.end() for match in re.finditer(r"[。！？!?…]+[”’」』）)]*", value)]
+    trimmed = value[: ends[-1]].strip() if ends else ""
+    return trimmed or value
+
+
 def stream_bridge_fallback_response(transcript: str) -> str:
-    value = str(transcript or "")
-    if _stream_bridge_status_like_transcript(value):
-        return "从工作节奏说起：是事情太满，还是提不起劲？"
-    if any(token in value for token in ("换工作", "跳槽", "离职", "找工作", "新工作")):
-        return "换工作这件事先拆开看：是现在耗着难受，还是新机会更吸引你？"
-    if any(token in value for token in ("想聊聊", "聊聊", "想找你聊", "想跟你说")):
-        return "先说你最想聊的那一件。"
-    return "我在。"
+    # 走到兜底说明这一轮没拿到可用回复：告诉用户是服务出错，不用话题模板冒充 Aura 的回答。
+    return SERVICE_ERROR_SPOKEN_REPLY
 
 
 def _stream_bridge_status_like_transcript(text: str) -> bool:

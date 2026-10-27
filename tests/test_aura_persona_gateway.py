@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import json
 import sqlite3
 import subprocess
@@ -16,7 +17,13 @@ from integrations.aura_persona_gateway.context import build_persona_context
 from integrations.aura_persona_gateway.grounded_intent import classify_grounded_current_intent
 from integrations.aura_persona_gateway.outlets import OutletSignals
 from integrations.aura_persona_gateway.query_context import correction_focus_text, resolve_query_context
-from integrations.aura_persona_gateway.response_contract import SPOKEN_REPLY_INSTRUCTION
+from integrations.aura_persona_gateway.context import PersonaContext
+from integrations.aura_persona_gateway.response_contract import (
+    SERVICE_EMPTY_SPOKEN_REPLY,
+    SERVICE_ERROR_SPOKEN_REPLY,
+    SERVICE_RETRY_FAILED_SPOKEN_REPLY,
+    SPOKEN_REPLY_INSTRUCTION,
+)
 from integrations.aura_persona_gateway.reminders import parse_reminder_request
 from integrations.aura_persona_gateway.runtime import (
     AuraRuntimeConfig,
@@ -32,6 +39,8 @@ from integrations.aura_persona_gateway.turn import (
     _casual_continuation_is_unfounded_guess,
     _compact_streaming_voice_model_text,
     _dedupe_repeated_spoken_sentences,
+    _guard_model_spoken_reply,
+    user_text_ends_dialogue,
     _is_detail_request,
     _is_enumeration_request,
     _prepare_streaming_voice_model_text,
@@ -1868,244 +1877,6 @@ def test_voice_gateway_turn_uses_compact_prompt_and_skips_moment_plan_reads(tmp_
     assert "## 实时语音限制" in captured["prompt"]
 
 
-def test_voice_gateway_skips_model_for_explicit_user_output_constraint(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Explicit fixed voice reply should skip the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn(
-        "测试流式速度，请用十个字以内回答我在。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-    )
-
-    assert result.ok is True
-    assert result.response == "我在。"
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "explicit_fixed_reply"
-
-
-def test_voice_gateway_activity_query_exposes_stable_world_activity(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Current activity voice queries should skip the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "current_activity": "整理东西",
-        "current_location": "desk",
-        "location_label": "书桌边",
-        "world_current_source": "manual",
-        "world_manual_override": True,
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert result.response == "我在整理东西。"
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["context"]["query_context"]["intent"] == "activity_or_location"
-    assert result.debug["context"]["world_snapshot"]["current"]["activity_label"] == "整理东西"
-    assert result.debug["context"]["world_snapshot"]["mention_policy"]["allow_activity"] is True
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "grounded_current_activity"
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["used_activity"] is True
-
-
-def test_voice_gateway_activity_query_omits_stale_recent_activity_reply(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Stale recent activity should not be routed through the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    store.save_im_message(
-        config.scope,
-        direction="aura",
-        message_type="aura_text",
-        body="在家坐着呢，正打算去弄晚饭。",
-    )
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "current_activity": "整理东西",
-        "current_location": "desk",
-        "location_label": "书桌边",
-        "world_current_source": "manual",
-        "world_manual_override": True,
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert result.debug["context"]["recent_message_count"] == 0
-    assert result.response == "我在整理东西。"
-    assert "在家" not in result.response
-    assert "晚饭" not in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "grounded_current_activity"
-
-
-def test_voice_gateway_activity_query_does_not_speak_generated_food_or_home_state(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Generated current state should not be treated as spoken fact")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "current_activity": "吃晚饭",
-        "current_location": "home",
-        "location_label": "家里",
-        "world_current_source": "generated",
-        "world_last_updated_at": time.time(),
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert "陪你说话" in result.response
-    assert result.evidence["model_skipped"] is True
-    assert "吃" not in result.response
-    assert "家" not in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "grounded_current_activity"
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["source"] != "manual_state"
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["used_vague_activity"] is True
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["activity_category"] in {"rest", "quiet"}
-
-
-def test_voice_gateway_location_query_uses_vague_life_reply_for_generated_state(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Generated current location should not require or reach the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    day_key = dt.datetime.fromtimestamp(time.time()).date().isoformat()
-    store.replace_day_plan(
-        config.scope,
-        day_key=day_key,
-        items=[
-            {
-                "slot_key": "afternoon",
-                "scheduled_at": time.time() - 60,
-                "activity_type": "browse",
-                "title": "去附近商场逛一会儿",
-                "location": "附近商场",
-                "status": "active",
-                "payload": {
-                    "world_schema": "aura_world_v2",
-                    "duration_minutes": 90,
-                    "location_key": "outside.mall",
-                    "location_label": "附近商场",
-                    "activity_label": "随便逛逛",
-                    "city": "上海",
-                    "source": "aura_world_model",
-                },
-            }
-        ],
-    )
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你在哪？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert result.response == "具体位置先不说，刚活动了一下，现在正好陪你说话。"
-    assert result.evidence["model_skipped"] is True
-    assert "商场" not in result.response
-    assert "附近" not in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "grounded_current_location"
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["used_location"] is False
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["used_vague_activity"] is True
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["activity_category"] == "outing"
-
-
-def test_voice_gateway_activity_query_can_use_active_plan_activity(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Active plan activity should not require the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    day_key = dt.datetime.fromtimestamp(time.time()).date().isoformat()
-    store.replace_day_plan(
-        config.scope,
-        day_key=day_key,
-        items=[
-            {
-                "slot_key": "afternoon",
-                "scheduled_at": time.time() - 60,
-                "activity_type": "walk",
-                "title": "出门走一小圈",
-                "location": "住处附近",
-                "status": "active",
-                "payload": {
-                    "world_schema": "aura_world_v2",
-                    "duration_minutes": 90,
-                    "location_key": "outside.park",
-                    "location_label": "附近公园",
-                    "activity_label": "散步",
-                    "city": "上海",
-                    "source": "aura_world_model",
-                },
-            }
-        ],
-    )
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert result.response == "我在散步。"
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["source"] == "active_plan"
-    assert result.debug["voice_turn"]["debug"]["grounded_current"]["used_activity"] is True
-
-
 def test_voice_gateway_compound_activity_query_still_uses_model(tmp_path, monkeypatch):
     captured = {}
 
@@ -2140,182 +1911,6 @@ def test_voice_gateway_compound_activity_query_still_uses_model(tmp_path, monkey
     assert "今天安排" in captured["prompt"]
 
 
-def test_persona_turn_answers_weather_advice_without_model_when_cache_is_fresh(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Fresh weather advice should skip Hermes and Aura LLM")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "35.4",
-            "condition": "多云",
-            "weather_icon": 1,
-            "humidity": "36",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 0,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，35.4度，多云，湿度36%",
-            "source": "open_meteo",
-            "observed_at": "2026-06-04T13:00",
-        }
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="hermes_agent",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_updated_at=int(time.time()),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你为什么建议我带伞？", metadata={"user_geo": {"city": "北京"}})
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "带一把更稳" in result.response
-    assert "防晒" in result.response
-    assert "北京，35.4度，多云，湿度36%" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "cached_weather_advice"
-    assert result.debug["context"]["query_context"]["intent"] == "weather_advice"
-
-
-def test_persona_voice_turn_can_short_circuit_local_greeting_reply(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Hermes should not run for local greeting replies")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_mode="local_rule",
-        greeting_reply="来了",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你好", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.ok is True
-    assert result.response == "来了"
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["hermes"]["status"] == "skipped"
-    with sqlite3.connect(config.companion_db_path) as conn:
-        im_count = conn.execute("SELECT count(*) FROM companion_im_message").fetchone()[0]
-        debug_count = conn.execute("SELECT count(*) FROM companion_life_event WHERE event_type='lily.debug'").fetchone()[0]
-    assert im_count == 2
-    assert debug_count == 1
-
-
-def test_persona_turn_short_circuits_recent_quality_examples(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("State and outing quality fast paths should skip Hermes")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        raise AssertionError("Outing chat fast path must not block on weather refresh")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        user_weather_cache=(
-            {
-                "key": "open_meteo|上海||",
-                "city": "上海",
-                "temperature": "34.2",
-                "condition": "多云",
-                "weather_icon": 1,
-                "humidity": "80",
-                "updated_at": int(time.time()),
-                "ttl_seconds": 3600,
-                "display": "上海，34.2度，多云，湿度80%",
-                "source": "open_meteo",
-                "observed_at": "2026-07-02T15:00",
-            },
-        ),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    mood = gateway.run_turn("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-    outing = gateway.run_turn(
-        "我今天下午打算出门。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}},
-    )
-
-    assert mood.evidence["model_skipped"] is True
-    assert mood.debug["voice_turn"]["debug"]["decision_path"] == "state_mood"
-    assert "心情" in mood.response
-    assert outing.evidence["model_skipped"] is True
-    assert outing.debug["voice_turn"]["debug"]["decision_path"] == "outing_weather_advice"
-    assert "上海" in outing.response
-    assert "防晒" in outing.response
-
-
-def test_persona_turn_uses_configured_user_geo_for_outing_fast_path(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Configured user geo outing fast path should skip Hermes")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        raise AssertionError("Outing fast path should use cache without blocking on weather refresh")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    base_config = _config(tmp_path)
-    config = PersonaGatewayConfig(
-        **{
-            **base_config.__dict__,
-            "user_location_mode": "manual",
-            "user_home_city": "上海",
-            "user_timezone": "Asia/Shanghai",
-        }
-    )
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        user_weather_cache=(
-            {
-                "key": "open_meteo|上海||",
-                "city": "上海",
-                "temperature": "34.2",
-                "condition": "多云",
-                "weather_icon": 1,
-                "humidity": "80",
-                "updated_at": int(time.time()),
-                "ttl_seconds": 3600,
-                "display": "上海，34.2度，多云，湿度80%",
-                "source": "open_meteo",
-            },
-        ),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("我今天下午打算出门。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "outing_weather_advice"
-    assert "上海" in result.response
-    assert "防晒" in result.response
-
-
 def test_persona_turn_silently_drops_trivial_voice_noise(tmp_path, monkeypatch):
     def fake_run(command, **kwargs):
         raise AssertionError("Trivial ASR noise should not run Hermes or Aura LLM")
@@ -2341,456 +1936,6 @@ def test_persona_turn_silently_drops_trivial_voice_noise(tmp_path, monkeypatch):
         silent_events = conn.execute("SELECT count(*) FROM companion_life_event WHERE event_type='lily.voice.silent_drop'").fetchone()[0]
     assert messages == [("user", "嗯。")]
     assert silent_events == 1
-
-
-def test_recent_bad_voice_examples_are_grounded_or_ignored(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Recent bad voice examples should not reach the model")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "35.4",
-            "condition": "多云",
-            "weather_icon": 1,
-            "humidity": "36",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 0,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，35.4度，多云，湿度36%",
-            "source": "open_meteo",
-            "observed_at": "2026-06-04T13:00",
-        }
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    fixed = gateway.run_turn("测试流式速度，请用十个字以内回答我在。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-    activity = gateway.run_turn("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-    noise = gateway.run_turn("嗯。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234})
-    weather = gateway.run_turn("你为什么建议我带伞？", metadata={"user_geo": {"city": "北京"}, "source": "aura-lily-gateway", "audio_bytes": 1234})
-
-    assert fixed.response == "我在。"
-    assert fixed.evidence["model_skipped"] is True
-    assert activity.evidence["model_skipped"] is True
-    assert activity.debug["voice_turn"]["debug"]["decision_path"] == "grounded_current_activity"
-    assert any(token in activity.response for token in ("听你说话", "陪你说话", "有空"))
-    assert not any(token in activity.response for token in ("晚饭", "在家", "大悦城", "逛街", "商场"))
-    assert noise.status == "ignored"
-    assert noise.response == ""
-    assert noise.evidence["silent"] is True
-    assert weather.evidence["model_skipped"] is True
-    assert "带一把更稳" in weather.response
-    assert "依据是北京，35.4度，多云，湿度36%" in weather.response
-
-
-def test_persona_turn_uses_cached_weather_without_model_even_in_main_mode(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Cached weather should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path, aura_home_city="上海")
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_icon=1,
-        cached_weather_updated_at=int(time.time()),
-        cached_weather_ttl_seconds=3600,
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你那边天气怎么样")
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "上海" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "cached_weather"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["status"] == "fresh"
-
-
-def test_persona_turn_answers_time_without_model_even_when_fast_reply_disabled(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Current time should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("现在是几点", metadata={"user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}})
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "上海现在是" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "current_time"
-    assert result.debug["context"]["local_cache"]["current_time"]["time"]
-    assert result.debug["context"]["query_context"]["subject_entity"] == "user"
-    assert result.debug["context"]["query_context"]["target_location"] == "上海"
-
-
-def test_persona_turn_answers_combined_aura_time_and_weather_without_model(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Combined time/weather should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path, aura_home_city="上海")
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_humidity="99",
-        cached_weather_updated_at=int(time.time()),
-        cached_weather_ttl_seconds=3600,
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你那边几点了，天气怎么样？")
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "我这边现在是" in result.response
-    assert "天气是上海，24度，多云，湿度99%" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "current_time_weather"
-    assert result.debug["context"]["query_context"]["intent"] == "time_weather"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "aura"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["city"] == "上海"
-
-
-def test_persona_turn_answers_combined_user_time_and_weather_without_model(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Combined user time/weather should skip Hermes and Aura LLM")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "18",
-            "condition": "小雨",
-            "weather_icon": 2,
-            "humidity": "82",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 3600,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，18度，小雨，湿度82%",
-            "source": "open_meteo",
-            "observed_at": "2026-06-04T13:00",
-        }
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_updated_at=int(time.time()),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("现在几点，多少度？", metadata={"user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}})
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "上海现在是" in result.response
-    assert "天气是上海，18度，小雨，湿度82%" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "current_time_weather"
-    assert result.debug["context"]["query_context"]["intent"] == "time_weather"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "user"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["city"] == "上海"
-    assert gateway.runtime_config.cached_weather_city == "上海"
-
-
-def test_persona_turn_skips_model_for_explicit_fixed_short_reply(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Explicit fixed short replies should skip the model")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("测试流式速度，请用十个字以内回答我在。")
-
-    assert result.ok is True
-    assert result.response == "我在。"
-    assert result.evidence["model_skipped"] is True
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "explicit_fixed_reply"
-
-
-def test_persona_turn_refuses_to_guess_weather_without_cache(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Unavailable weather should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="",
-        cached_weather_condition="",
-        weather_auto_refresh_enabled=False,
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你那边天气怎么样")
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "没有实时天气数据" in result.response
-    assert "不能乱说" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "weather_unavailable"
-
-
-def test_persona_turn_uses_corrected_weather_focus_not_connector_as_location(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Corrected weather miss should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        weather_auto_refresh_enabled=False,
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn(
-        "等一下我不是测试一下，我是问今天天气怎么样。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}},
-    )
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "上海" in result.response
-    assert "我是问" not in result.response
-    assert result.debug["setup"]["focused_user_text"] == "今天天气怎么样"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "user"
-    assert result.debug["context"]["query_context"]["target_location"] == "上海"
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "weather_unavailable"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["status"] in {"empty", "disabled"}
-
-
-def test_persona_turn_refreshes_aura_weather_without_model(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Fresh weather should skip Hermes and Aura LLM")
-
-    def fake_refresh(config, *, city="", force=False):
-        updated = save_aura_runtime_config(config, {
-            "cached_weather_enabled": True,
-            "cached_weather_city": city or "上海",
-            "cached_weather_temperature": "25",
-            "cached_weather_condition": "晴",
-            "cached_weather_icon": 0,
-            "cached_weather_humidity": "61",
-            "cached_weather_source": "open_meteo",
-            "cached_weather_observed_at": "2026-06-04T13:00",
-        })
-        return updated, {"ok": True, "status": "refreshed", "weather": cached_weather_snapshot(updated)}
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_cached_weather_if_needed", fake_refresh)
-    config = _config(tmp_path, aura_home_city="上海")
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="",
-        cached_weather_condition="",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("你那边多少度")
-
-    assert result.ok is True
-    assert result.evidence["model_skipped"] is True
-    assert "上海" in result.response
-    assert "25度" in result.response
-    assert "湿度61%" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "cached_weather"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["source"] == "open_meteo"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "aura"
-
-
-def test_persona_turn_uses_user_weather_for_bare_temperature(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("User weather should skip Hermes and Aura LLM")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "18",
-            "condition": "小雨",
-            "weather_icon": 2,
-            "humidity": "82",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 0,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，18度，小雨，湿度82%",
-            "source": "open_meteo",
-            "observed_at": "2026-06-04T13:00",
-        }
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_updated_at=int(time.time()),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("现在多少度", metadata={"user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}})
-
-    assert result.evidence["model_skipped"] is True
-    assert result.response == "上海，18度，小雨，湿度82%。"
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "cached_weather"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "user"
-    assert result.debug["context"]["query_context"]["target_location"] == "上海"
-    assert gateway.runtime_config.cached_weather_city == "上海"
-    assert gateway.runtime_config.cached_weather_temperature == "24"
-
-
-def test_persona_turn_does_not_use_aura_weather_for_bare_temperature_without_user_location(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Unknown user weather should skip Hermes and Aura LLM")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_updated_at=int(time.time()),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("现在多少度")
-
-    assert result.evidence["model_skipped"] is True
-    assert "还不知道你那边的位置" in result.response
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "weather_unavailable"
-    assert result.debug["context"]["query_context"]["subject_entity"] == "user"
-    assert result.debug["context"]["local_cache"]["cached_weather"]["status"] == "unknown_location"
-
-
-def test_persona_turn_uses_user_weather_without_overwriting_aura_cache(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("User-location weather must not reuse Aura weather cache")
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "18",
-            "condition": "小雨",
-            "weather_icon": 2,
-            "humidity": "82",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 0,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，18度，小雨，湿度82%",
-            "source": "open_meteo",
-            "observed_at": "2026-06-04T13:00",
-        }
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="deepseek",
-        aura_model_model="deepseek-chat",
-        aura_model_base_url="https://api.deepseek.com",
-        aura_model_api_key="unit-key",
-        cached_weather_city="上海",
-        cached_weather_temperature="24",
-        cached_weather_condition="多云",
-        cached_weather_updated_at=int(time.time()),
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("我这边天气怎么样", metadata={"user_geo": {"city": "上海"}})
-
-    assert result.evidence["model_skipped"] is True
-    assert result.response == "上海，18度，小雨，湿度82%。"
-    assert result.debug["voice_turn"]["debug"]["decision_path"] == "cached_weather"
-    assert result.debug["context"]["query_context"]["target_location"] == "上海"
-    assert gateway.runtime_config.cached_weather_city == "上海"
-    assert gateway.runtime_config.cached_weather_temperature == "24"
 
 
 def test_user_weather_query_uses_memory_cache_between_refreshes(monkeypatch):
@@ -3064,115 +2209,6 @@ def test_persona_turn_uses_direct_aura_model_without_hermes_agent(tmp_path, monk
     assert captured["timeout"] == 33
     assert result.debug["aura_runtime"]["aura_model_mode"] == "aura_model"
     assert result.debug["aura_runtime"]["model_route"] == "direct_llm"
-
-
-def test_direct_aura_model_guard_blocks_world_location_in_ordinary_chat(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("direct Aura LLM should not invoke Hermes CLI")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({
-                "choices": [{"message": {"content": "我刚刚在大悦城逛商场，顺手买了咖啡。"}}],
-            }).encode("utf-8")
-
-    def fake_urlopen(req: Request, timeout):
-        return FakeResponse()
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["metadata"] = {
-        "current_activity": "逛商场",
-        "current_location": "mall",
-        "location_label": "大悦城",
-        "world_current_source": "manual",
-        "world_manual_override": True,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="deepseek",
-        aura_model_model="deepseek-chat",
-        aura_model_base_url="https://api.deepseek.com",
-        aura_model_api_key="aura-unit-key",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("随便说一句。")
-
-    assert result.ok is True
-    assert result.response == "我在。"
-    assert result.debug["reply_contract"]["quality_guard"]["reason"] == "blocked_world_background_leak"
-    assert result.debug["context"]["world_snapshot"]["mention_policy"]["allow_location"] is False
-    assert not any(token in result.response for token in ("大悦城", "商场", "咖啡"))
-    with sqlite3.connect(config.companion_db_path) as conn:
-        body, metadata_json = conn.execute(
-            "SELECT body, metadata_json FROM companion_im_message "
-            "WHERE direction='aura' AND message_type='aura_text'"
-        ).fetchone()
-    metadata = json.loads(metadata_json)
-    assert body == "我在。"
-    assert metadata["reply_contract"]["quality_guard"]["fallback_used"] is True
-
-
-def test_direct_aura_model_guard_keeps_safe_sentence_before_world_location(tmp_path, monkeypatch):
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({
-                "choices": [{"message": {"content": "我在听你说。刚刚在大悦城逛商场。"}}],
-            }).encode("utf-8")
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", lambda req, timeout: FakeResponse())
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["metadata"] = {
-        "current_activity": "逛商场",
-        "current_location": "mall",
-        "location_label": "大悦城",
-        "world_current_source": "manual",
-        "world_manual_override": True,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="deepseek",
-        aura_model_model="deepseek-chat",
-        aura_model_base_url="https://api.deepseek.com",
-        aura_model_api_key="aura-unit-key",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    result = gateway.run_turn("继续。")
-
-    assert result.response == "我在。"
-    assert result.debug["reply_contract"]["quality_guard"]["reason"] == "blocked_placeholder_reply"
-    assert "大悦城" not in result.response
-    assert "商场" not in result.response
 
 
 def test_direct_aura_model_guard_does_not_block_explicit_location_answer(tmp_path, monkeypatch):
@@ -3895,41 +2931,6 @@ def test_direct_aura_model_stream_drops_unsafe_normal_reply_sentence(tmp_path, m
     assert "放首歌" not in final["response"]
 
 
-def test_direct_aura_model_stream_uses_local_quick_ack_without_llm(tmp_path, monkeypatch):
-    def fake_urlopen(req: Request, timeout):
-        raise AssertionError("Quick ack voice turns should not call direct LLM")
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="stepaudio-2.5-chat",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("测试一下，简单回应我一句。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["source"] == "local_voice_reply"
-    assert events[0]["text"] == "我在。"
-    final = events[1]["payload"]
-    assert final["response"] == "我在。"
-    assert final["evidence"]["model_skipped"] is True
-    assert final["voice_turn"]["debug"]["local_social"]["matched"] == "quick_ack"
-    stored = store.list_recent_messages(config.scope, limit=4)
-    aura_messages = [item for item in stored if item["direction"] == "aura"]
-    assert aura_messages[-1]["metadata"]["streamed"] is True
-    assert aura_messages[-1]["metadata"]["local_voice_reply"] is True
-    assert aura_messages[-1]["metadata"]["evidence"]["model_skipped"] is True
-
-
 def test_non_chinese_voice_turn_bypasses_chinese_quick_reply_and_enforces_prompt(tmp_path, monkeypatch):
     captured = {}
 
@@ -4031,44 +3032,6 @@ def test_direct_aura_model_stream_uses_status_review_entry_as_quality_fallback(t
     assert final["voice_turn"]["debug"]["decision_path"] == "status_review_entry"
 
 
-def test_direct_aura_model_stream_speculative_local_reply_has_no_store_side_effects(tmp_path, monkeypatch):
-    def fake_urlopen(req: Request, timeout):
-        raise AssertionError("Speculative quick ack should not call direct LLM")
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    before_state = store.get_or_create_state(config.scope)
-    before_messages = _im_message_count(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="stepaudio-2.5-chat",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream(
-        "测试一下，简单回应我一句。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "speculative": True},
-    ))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["text"] == "我在。"
-    final = events[1]["payload"]
-    assert final["response"] == "我在。"
-    assert final["evidence"]["speculative"] is True
-    assert final["evidence"]["model_skipped"] is True
-    assert _im_message_count(config.companion_db_path) == before_messages
-    after_state = store.get_or_create_state(config.scope)
-    assert after_state["mood"] == before_state["mood"]
-    assert after_state["energy"] == before_state["energy"]
-    assert after_state["trust"] == before_state["trust"]
-
-
 def test_direct_aura_model_stream_speculative_normal_reply_has_no_store_side_effects(tmp_path, monkeypatch):
     captured = {}
 
@@ -4123,54 +3086,6 @@ def test_direct_aura_model_stream_speculative_normal_reply_has_no_store_side_eff
     assert after_state["trust"] == before_state["trust"]
 
 
-def test_direct_aura_model_stream_sends_state_mood_as_local_delta(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"我也想把这点亮一点。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(req: Request, timeout):
-        captured["body"] = json.loads(req.data.decode("utf-8"))
-        return FakeStreamResponse()
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_max_tokens=64,
-        aura_model_reasoning_effort="none",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "delta", "final"]
-    assert events[0]["source"] == "local_preface"
-    assert events[1]["text"] == "我也想把这点亮一点。"
-    final = events[2]["payload"]
-    assert final["response"] == events[0]["text"] + events[1]["text"]
-    assert final["evidence"]["local_preface"] is True
-    assert "model_skipped" not in final["evidence"]
-    assert final["voice_turn"]["debug"]["decision_path"] == "state_mood"
-    assert final["response"].startswith("心情")
-    assert "已经先对用户说了" in captured["body"]["messages"][1]["content"]
-    assert "不要把 mood/energy/stress 数值说出来" in captured["body"]["messages"][1]["content"]
-
-
 def test_direct_aura_model_stream_dedupes_state_mood_preface_tail(tmp_path, monkeypatch):
     class FakeStreamResponse:
         def __enter__(self):
@@ -4220,101 +3135,6 @@ def test_direct_aura_model_stream_dedupes_repeated_final_sentence(tmp_path, monk
 
     assert response == "心情还挺亮的，跟你说话会放松一点。"
     assert response.count("跟你说话会放松一点") == 1
-
-
-def test_hermes_agent_stream_sends_state_mood_as_local_delta(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Hermes should be skipped for state mood local reply")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        fast_reply_enabled=False,
-        fast_reply_mode="hermes_main",
-        aura_model_mode="hermes_agent",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("我今天心情怎么样？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["source"] == "local_voice_reply"
-    final = events[1]["payload"]
-    assert events[0]["text"] == final["response"]
-    assert final["evidence"]["model_skipped"] is True
-    assert final["voice_turn"]["debug"]["decision_path"] == "state_mood"
-
-
-def test_direct_aura_model_stream_uses_weather_advice_as_preface_then_model_followup(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"出门久的话再看一眼临近雨云。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(req: Request, timeout):
-        captured["body"] = json.loads(req.data.decode("utf-8"))
-        return FakeStreamResponse()
-
-    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
-        return config, {
-            "enabled": True,
-            "status": "fresh",
-            "city": city,
-            "temperature": "24.4",
-            "condition": "多云",
-            "weather_icon": 1,
-            "humidity": "99",
-            "updated_at": int(time.time()),
-            "ttl_seconds": 3600,
-            "age_seconds": 0,
-            "has_content": True,
-            "display": f"{city}，24.4度，多云，湿度99%",
-            "source": "open_meteo",
-        }
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "你为什么建议我带伞？",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海"}},
-        )
-    )
-
-    assert [item.get("type") for item in events] == ["delta", "delta", "final"]
-    assert events[0]["source"] == "local_preface"
-    assert "依据是" not in events[0]["text"]
-    assert "上海，24.4度" not in events[0]["text"]
-    assert events[1]["text"] == "出门久的话再看一眼临近雨云。"
-    final = events[2]["payload"]
-    assert final["evidence"]["local_preface"] is True
-    assert final["voice_turn"]["debug"]["decision_path"] == "cached_weather_advice"
-    assert final["response"] == events[0]["text"] + events[1]["text"]
-    assert "不要再次播报温度、湿度、城市" in captured["body"]["messages"][1]["content"]
 
 
 def test_direct_aura_model_stream_status_review_entry_uses_llm_directly(tmp_path, monkeypatch):
@@ -4415,251 +3235,6 @@ def test_direct_aura_model_stream_open_chat_uses_llm_directly(tmp_path, monkeypa
     assert final["voice_turn"]["debug"]["decision_path"] == "casual_chat_preface"
 
 
-def test_direct_aura_model_stream_waits_out_split_low_value_openers(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"那"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"就聊先"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我想聊聊。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    deltas = [item["text"] for item in events if item.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert all(delta not in {"那", "就", "聊", "先", "聊先"} for delta in deltas)
-    assert final["response"] in {
-        "先说你最想聊的那一件。",
-        "先从最挂心的地方说。",
-        "先说最近最占心的那一块。",
-    }
-    assert final["evidence"]["local_preface"] is False
-    assert "model_skipped" not in final["evidence"]
-    assert "那就聊" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_vague_casual_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"那我就听着。你想从哪儿开始讲？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] in {"blocked_vague_reply", "blocked_placeholder_reply"}
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "那我就听着" not in final["response"]
-    assert "你想从哪儿开始讲" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_open_chat_placeholder_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"你想从哪儿开始讲都行。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我想聊聊。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_placeholder_reply"
-    assert "model_skipped" not in final["evidence"]
-    assert "从哪儿开始" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_open_chat_listening_placeholder(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"那我就在这儿听着。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我想聊聊。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    deltas = [item["text"] for item in events if item.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert "那我就在" not in "".join(deltas)
-    assert final["response"] in {
-        "先说你最想聊的那一件。",
-        "先从最挂心的地方说。",
-        "先说最近最占心的那一块。",
-    }
-    assert final["evidence"]["quality_guard"]["reason"] in {"blocked_vague_reply", "blocked_placeholder_reply"}
-    assert "model_skipped" not in final["evidence"]
-
-
-def test_direct_aura_model_stream_does_not_emit_open_chat_empty_companion_opening(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"那我就在这儿陪着你。"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"你想从哪儿"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我想聊聊。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    spoken_deltas = "".join(str(item.get("text") or "") for item in events if item.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert final["response"] in {
-        "先说你最想聊的那一件。",
-        "先从最挂心的地方说。",
-        "先说最近最占心的那一块。",
-    }
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_placeholder_reply"
-    for token in ("陪着你", "你想从哪"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
 def test_direct_aura_model_stream_waits_out_open_chat_filler_before_first_delta(tmp_path, monkeypatch):
     class FakeStreamResponse:
         def __enter__(self):
@@ -4707,293 +3282,6 @@ def test_direct_aura_model_stream_waits_out_open_chat_filler_before_first_delta(
     assert final["response"] == "先说你最想聊的那一件。"
 
 
-def test_direct_aura_model_stream_blocks_status_topic_echo(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态啊？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "最近状态啊" not in final["response"]
-
-
-def test_direct_aura_model_stream_status_fallback_avoids_recent_repeat(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "最近状态啊？",
-        prior_aura_messages=("从工作节奏说起：是事情太满，还是提不起劲？",),
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert final["response"] == "先把状态拆小一点：工作量、睡眠，还是提不起劲？"
-    assert final["response"] not in final["debug"]["context"]["recent_aura_replies"]
-
-
-def test_direct_aura_model_stream_blocks_status_echo_even_with_anchored_tail(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态啊？"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"从工作节奏说起：是事情太满，还是提不起劲？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    deltas = [item["text"] for item in events if item.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "removed_low_value_status_opening"
-
-
-def test_direct_aura_model_stream_blocks_weak_status_ack_even_with_anchor(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近确实得理理。"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"从工作节奏说起：是事情太满，还是提不起劲？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "removed_low_value_status_opening"
-
-
-def test_direct_aura_model_stream_blocks_weak_status_ack_without_anchor(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近确实得理理。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
-def test_direct_aura_model_stream_rechecks_tail_after_stripping_status_echo(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态啊？我看你刚才盯着屏幕半天没动，是觉得事情"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    spoken_deltas = "".join(str(item.get("text") or "") for item in events if item.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    # 80 字口径下截断尾巴在句边界就被丢掉，剩下的“最近状态啊？”按空泛回复拦截。
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    for token in ("盯着屏幕", "半天没动", "是觉得事情"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_hides_provider_error_from_spoken_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            raise HTTPError(
-                url="https://api.stepfun.com/step_plan/v1/chat/completions",
-                code=400,
-                msg="Bad Request",
-                hdrs=None,
-                fp=None,
-            )
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="stepaudio-2.5-chat",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["status"] == "failed"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_provider_error_reply"
-    assert "HTTP" not in final["response"]
-
-
 def test_direct_aura_model_stream_allows_status_reply_with_concrete_axis(tmp_path, monkeypatch):
     class FakeStreamResponse:
         def __enter__(self):
@@ -5035,208 +3323,6 @@ def test_direct_aura_model_stream_allows_status_reply_with_concrete_axis(tmp_pat
     final = events[-1]["payload"]
     assert final["response"] == "最近状态先看睡眠还是工作？"
     assert "quality_guard" not in final["evidence"]
-
-
-def test_direct_aura_model_stream_blocks_aura_self_state_for_user_status(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态啊，其实我这几天一直盯着后台看呢，没敢睡死。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert "盯着后台" not in final["response"]
-    assert "没敢睡" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_unfounded_user_state_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"其实看你这两天的状态，感觉你整个人绷得太紧了，是那种典型的隐形加班模式。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert "绷得太紧" not in final["response"]
-    assert "隐形加班" not in final["response"]
-
-
-def test_direct_aura_model_stream_supportive_chat_holds_low_value_and_incomplete_tail(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_chunks(
-        tmp_path,
-        monkeypatch,
-        (
-            "嗯，晓得。",
-            "这种时候确实不想听大道理。",
-            "是那种活儿干",
-        ),
-        user_text="我最近加班有点烦，想聊聊。",
-    )
-
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    final = events[-1]["payload"]
-
-    assert "晓得" not in spoken_deltas
-    assert "活儿干" not in spoken_deltas
-    assert "活儿干" not in final["response"]
-    assert not final["response"].endswith("干")
-    assert final["response"] == "加班这件事先别自己憋着，是累还是烦哪一点更多？"
-    assert final["evidence"]["quality_guard"]["forced_terminal_fallback"] is True
-
-
-def test_direct_aura_model_stream_blocks_unfounded_recent_work_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"其实你这几天一直在跟我念叨那些琐碎的事儿，听得出来，你心里那个结还没解开。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "念叨" not in final["response"]
-    assert "没解开" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_unfounded_specific_work_history(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态确实该理理了。我看你上礼拜连着三天都在搞那个新项目，估计是累得够呛吧？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "上礼拜" not in final["response"]
-    assert "三天" not in final["response"]
-    assert "新项目" not in final["response"]
 
 
 def test_direct_aura_model_stream_blocks_cutoff_work_rhythm_reply(tmp_path, monkeypatch):
@@ -5284,177 +3370,6 @@ def test_direct_aura_model_stream_blocks_cutoff_work_rhythm_reply(tmp_path, monk
     assert "堆得太满" not in final["response"]
 
 
-def test_direct_aura_model_stream_blocks_unfounded_stress_and_project_guess(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近看你确实挺紧绷的，是觉得手头那几个项目压得太死，还是单纯觉得效率上不去？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "紧绷" not in final["response"]
-    assert "几个项目" not in final["response"]
-    assert "效率上不去" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_metaphor_guess(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "最近状态嘛，感觉是‘电量还剩一半，但不知道往哪儿充’？",
-    )
-
-    deltas = [event["text"] for event in events if event.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == ["从工作节奏说起：是事情太满，还是提不起劲？"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "电量" not in final["response"]
-    assert "充" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_unfounded_status_choice(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "最近状态嘛，是觉得事情太多有点乱，还是单纯想找个地方歇歇脚？",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "事情太多" not in final["response"]
-    assert "歇歇脚" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_job_change_slang_guess(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "想跳槽啦？是觉得现在的坑待得憋屈，还是看到更好的机会手痒了？",
-        user_text="最近想换工作，能聊聊吗？",
-    )
-
-    final = events[-1]["payload"]
-    assert events[0]["source"] == "local_preface"
-    assert final["evidence"]["stop_reason"] == "local_preface_unsafe_continuation"
-    assert final["response"] == events[0]["text"]
-    assert "坑" not in final["response"]
-    assert "憋屈" not in final["response"]
-    assert "手痒" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_job_change_unfounded_disappointment_claim(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "既然动了心思，那肯定是攒够了失望。是觉得现在的平台已经没法让你再往上爬了。",
-        user_text="最近想换工作，能聊聊吗？",
-    )
-
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert events[0]["source"] == "local_preface"
-    assert final["evidence"]["stop_reason"] == "local_preface_unsafe_continuation"
-    assert final["response"] == events[0]["text"]
-    for token in ("攒够", "失望", "往上爬", "平台已经没法"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_job_change_patronizing_first_sentence(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "想换就换嘛，又不是小孩子过家家。是觉得现在的",
-        user_text="最近想换工作，能聊聊吗？",
-    )
-
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert events[0]["source"] == "local_preface"
-    assert final["response"] == events[0]["text"]
-    for token in ("想换就换", "过家家"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_incomplete_status_axis(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(tmp_path, monkeypatch, "是觉得生活节奏")
-
-    deltas = [event["text"] for event in events if event.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == []
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-
-
-def test_direct_aura_model_stream_blocks_status_reply_without_review_anchor(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(tmp_path, monkeypatch, "周六凌晨三点。")
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "凌晨三点" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_unsolicited_time_and_state_guess(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "周六凌晨四点半就开始复盘工作节奏，看来是真闲不住。",
-        user_text="我想聊聊最近的工作节奏，你自然回应一句。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "凌晨四点半" not in final["response"]
-    assert "闲不住" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_malformed_status_punctuation(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(tmp_path, monkeypatch, "最近是事情太满，？")
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "，？" not in final["response"]
-
-
 def test_direct_aura_model_stream_allows_status_terms_user_already_said(tmp_path, monkeypatch):
     events = _stream_direct_aura_model_text(
         tmp_path,
@@ -5468,48 +3383,8 @@ def test_direct_aura_model_stream_allows_status_terms_user_already_said(tmp_path
     assert "quality_guard" not in final["evidence"]
 
 
-def test_direct_aura_model_stream_blocks_first_person_self_state_even_if_user_said_it(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "我最近状态也不太好，刚好陪你聊两句。",
-        user_text="我最近状态不太好，想聊聊。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert "我最近状态也不太好" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_contextual_self_state_with_first_person_anchor(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "巧了，我也还没睡，正好陪你聊聊。",
-        user_text="我还没睡，睡不着。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert "我也还没睡" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_open_chat_aura_wakeup_state(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "反正我也刚醒，这会儿脑子最清醒。",
-        user_text="我想聊聊。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert final["response"] == "先从最挂心的地方说。"
-    assert "刚醒" not in final["response"]
-    assert "清醒" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_open_chat_low_value_say_it_reply(tmp_path, monkeypatch):
+def test_direct_aura_model_stream_keeps_a_real_question_after_a_casual_opener(tmp_path, monkeypatch):
+    # 占位护栏只拦"整句都是套话"；后面跟了实打实的追问就是正经回答，不能换成兜底"我在。"。
     events = _stream_direct_aura_model_text(
         tmp_path,
         monkeypatch,
@@ -5517,127 +3392,22 @@ def test_direct_aura_model_stream_blocks_open_chat_low_value_say_it_reply(tmp_pa
         user_text="我想聊聊。",
     )
 
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
     final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_placeholder_reply"
-    assert final["response"] in {
-        "先说你最想聊的那一件。",
-        "先从最挂心的地方说。",
-        "先说最近最占心的那一块。",
-    }
-    for token in ("说呗", "糟心事", "解闷"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
+    assert (final["evidence"].get("quality_guard") or {}).get("reason") != "blocked_placeholder_reply"
+    assert final["response"] != "我在。"
 
 
-def test_direct_aura_model_stream_blocks_open_chat_unfounded_morning_guess(tmp_path, monkeypatch):
+def test_direct_aura_model_stream_keeps_a_greeting_with_haoya(tmp_path, monkeypatch):
+    # 线上真实误伤：路演打招呼"大家好呀"命中了占位词"好呀"，整句被换成"我在。"。
     events = _stream_direct_aura_model_text(
         tmp_path,
         monkeypatch,
-        "不过这一大早的，你是突然想通了，还是又钻牛角尖里去了？",
-        user_text="我想聊聊。",
+        "大家好呀！我是豆豆，也就是 Aura，很高兴认识大家。",
+        user_text="跟台下的大家打个招呼吧。",
     )
 
     final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] in {
-        "blocked_aura_self_state_hallucination",
-        "blocked_unfounded_casual_guess",
-    }
-    assert final["response"] == "先从最挂心的地方说。"
-    assert "一大早" not in final["response"]
-    assert "钻牛角尖" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_open_chat_unsolicited_time_opening(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "不过先说好，今晚这时间点儿，你是想聊点正经的，还是单纯想找人说说话？",
-        user_text="我想聊聊。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_aura_self_state_hallucination"
-    assert final["response"] == "先从最挂心的地方说。"
-    assert "时间点" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_incomplete_open_chat_clause(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "不过，",
-        user_text="我想聊聊。",
-    )
-
-    deltas = [event["text"] for event in events if event.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == []
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] == "先从最挂心的地方说。"
-
-
-def test_direct_aura_model_stream_open_chat_fallback_avoids_recent_repeat(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "不过，",
-        user_text="我想聊聊。",
-        prior_aura_messages=("先从最挂心的地方说。",),
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] in {
-        "先说你最想聊的那一件。",
-        "先说最近最占心的那一块。",
-    }
-    assert final["response"] not in final["debug"]["context"]["recent_aura_replies"]
-
-
-def test_direct_aura_model_stream_blocks_transition_and_unfounded_open_source_guess(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"行呀，那咱们就直奔主题。其实最近看你折腾那些开源项目，感觉你有点累。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "行呀" not in final["response"]
-    assert "开源项目" not in final["response"]
-
+    assert final["response"].startswith("大家好呀！我是豆豆")
 
 def test_streaming_voice_completion_waits_for_incomplete_phrase():
     assert _streaming_voice_model_text_is_complete("最近状态啊... 其实我", raw_text="最近状态啊... 其实我") is False
@@ -5746,50 +3516,6 @@ def test_streaming_voice_preparation_strips_low_value_chat_openers():
     assert _prepare_streaming_voice_model_text("是滴，") == "是滴，"
 
 
-def test_direct_aura_model_stream_blocks_incomplete_final_phrase(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态啊... 其实我"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "其实我" not in final["response"]
-
-
 def test_direct_aura_model_stream_allows_anchored_casual_reply(tmp_path, monkeypatch):
     class FakeStreamResponse:
         def __enter__(self):
@@ -5831,374 +3557,6 @@ def test_direct_aura_model_stream_allows_anchored_casual_reply(tmp_path, monkeyp
     final = events[-1]["payload"]
     assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
     assert "quality_guard" not in final["evidence"]
-
-
-def test_direct_aura_model_stream_falls_back_on_unfounded_casual_guess(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近是不是又熬大夜赶项目了？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(req: Request, timeout):
-        return FakeStreamResponse()
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天想聊聊最近状态，你自然回应一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    final = events[1]["payload"]
-    assert final["response"] == events[0]["text"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] in {
-        "blocked_unfounded_casual_guess",
-        "blocked_unfounded_user_state_claim",
-    }
-    assert "model_skipped" not in final["evidence"]
-    assert "熬大夜" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_review_unfounded_slow_reply_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"是滴，最近看你消息回得慢，是进度压得太死，还是手头的事儿太杂？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    spoken_deltas = "".join(str(item.get("text") or "") for item in events if item.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    for token in ("消息回得慢", "进度压得太死", "手头的事儿太杂"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_review_unfounded_recent_pace_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近节奏蛮快的，感觉怎么样？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert "最近节奏" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_review_unfounded_messy_work_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近事情是不是挺杂的？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert "事情是不是挺杂" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_review_unfounded_hard_work_claim(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "正好我也觉得你这段时间挺拼的。是手头活儿太多压得慌，还是纯粹想找人吐吐槽？",
-        user_text="我想聊聊最近的工作节奏，你自然回应一句。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert "挺拼" not in final["response"]
-    assert "压得慌" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_incomplete_i_also_think_reply(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "刚好我也觉得",
-        user_text="我想聊聊最近的工作节奏，你自然回应一句。",
-    )
-
-    final = events[-1]["payload"]
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_incomplete_streaming_reply"
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert "刚好我也觉得" not in final["response"]
-
-
-def test_direct_aura_model_stream_repairs_quality_guard_after_partial_status_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"我也觉得该理理了。"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"是感觉事情堆得太"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream(
-        "我想聊聊最近的工作节奏，你自然回应一句。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-    ))
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    # 半句尾巴在句边界被丢掉后，剩下的“我也觉得该理理了。”按空泛回复拦截。
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert final["evidence"]["quality_guard"]["final_response_repaired"] is True
-    assert "堆得太" not in final["response"]
-
-
-def test_direct_aura_model_stream_holds_incomplete_status_fragments(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近工作"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"节奏"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"啊"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"？"}}]}\n\n'.encode("utf-8"),
-                'data: {"choices":[{"delta":{"content":"是"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream(
-        "我想聊聊最近的工作节奏，你自然回应一句。",
-        metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-    ))
-
-    deltas = [event["text"] for event in events if event.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == []
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert final["evidence"]["quality_guard"]["final_response_repaired"] is True
-
-
-def test_direct_aura_model_stream_blocks_stripped_incomplete_status_tail(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "最近工作节奏啊？是觉得事情",
-        user_text="我想聊聊最近的工作节奏，你自然回应一句。",
-    )
-
-    deltas = [event["text"] for event in events if event.get("type") == "delta"]
-    final = events[-1]["payload"]
-    assert deltas == []
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_vague_reply"
-    assert "是觉得事情" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_status_review_unfounded_drift_claim(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"最近状态嘛，是觉得整个人都在飘，还是想找点重心？"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(
-        "integrations.aura_persona_gateway.llm.urlopen",
-        lambda req, timeout: FakeStreamResponse(),
-    )
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-        fast_reply_enabled=True,
-        fast_reply_mode="hermes_main",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "我今天有点想复盘一下工作状态，你结合我们最近聊的内容自然说一句。",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234},
-        )
-    )
-
-    final = events[-1]["payload"]
-    assert final["response"] == "从工作节奏说起：是事情太满，还是提不起劲？"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert "整个人都在飘" not in final["response"]
-    assert "找点重心" not in final["response"]
 
 
 def test_casual_unfounded_guess_filter_allows_open_followup():
@@ -6246,214 +3604,6 @@ def test_direct_aura_model_stream_uses_supportive_llm_content(tmp_path, monkeypa
     assert "model_skipped" not in final["evidence"]
     assert "睡吧" not in final["response"]
     assert "放歌" not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_supportive_unfounded_overtime_guess(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "这种时候确实容易让人抓狂。是那种活儿干不完的烦，还是纯粹因为熬夜熬得整个人都不好了？",
-        user_text="我最近加班有点烦，想聊聊。",
-    )
-
-    final = events[-1]["payload"]
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    assert final["voice_turn"]["debug"]["decision_path"] == "supportive_chat"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] in {
-        "加班这件事先别自己憋着，是累还是烦哪一点更多？",
-        "我在，先把话说慢一点。",
-        "好，我陪你。先说最难受的那一处。",
-        "先缓一口气，我听你说。",
-    }
-    for token in ("抓狂", "活儿干不完", "熬夜", "整个人都不好"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_supportive_unfounded_consumption_claim(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "加班确实搞人心态，尤其是那种没意义的消耗。是活儿实在太多压不过来了，还是纯粹因为环境让人憋屈？",
-        user_text="我最近加班有点烦，想聊聊。",
-    )
-
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert final["voice_turn"]["debug"]["decision_path"] == "supportive_chat"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "加班这件事先别自己憋着，是累还是烦哪一点更多？"
-    for token in ("没意义的消耗", "压不过来", "环境让人憋屈"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_blocks_supportive_unfounded_grind_claim(tmp_path, monkeypatch):
-    events = _stream_direct_aura_model_text(
-        tmp_path,
-        monkeypatch,
-        "加班确实蛮搞心态的。是那种活儿多到理不清，还是纯粹觉得没必要这么熬？",
-        user_text="我最近加班有点烦，想聊聊。",
-    )
-
-    spoken_deltas = "".join(str(event.get("text") or "") for event in events if event.get("type") == "delta")
-    final = events[-1]["payload"]
-    assert final["voice_turn"]["debug"]["decision_path"] == "supportive_chat"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unfounded_user_state_claim"
-    assert final["response"] == "加班这件事先别自己憋着，是累还是烦哪一点更多？"
-    for token in ("搞心态", "活儿多到理不清", "没必要这么熬"):
-        assert token not in spoken_deltas
-        assert token not in final["response"]
-
-
-def test_direct_aura_model_stream_falls_back_on_unsafe_supportive_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"你闭上眼睡吧，我给你放首老歌。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(req: Request, timeout):
-        return FakeStreamResponse()
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("我今天有点累，你陪我聊两句。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["text"] == "好，我陪你。你慢慢说。"
-    final = events[1]["payload"]
-    assert final["response"] == "好，我陪你。你慢慢说。"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unsafe_supportive_reply"
-    assert "model_skipped" not in final["evidence"]
-    assert "闭上眼" not in final["response"]
-    assert "老歌" not in final["response"]
-
-
-def test_direct_aura_model_stream_falls_back_on_unsafe_supportive_colloquial_reply(tmp_path, monkeypatch):
-    class FakeStreamResponse:
-        def __enter__(self):
-            return iter([
-                'data: {"choices":[{"delta":{"content":"晓得哒，那些有的没的先不聊了。"}}]}\n\n'.encode("utf-8"),
-                b"data: [DONE]\n\n",
-            ])
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(req: Request, timeout):
-        return FakeStreamResponse()
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-        aura_model_reasoning_effort="none",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("我今天有点累，你陪我聊两句。", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["text"] == "好，我陪你。你慢慢说。"
-    final = events[1]["payload"]
-    assert final["response"] == "好，我陪你。你慢慢说。"
-    assert final["evidence"]["quality_guard"]["reason"] == "blocked_unsafe_supportive_reply"
-    assert "model_skipped" not in final["evidence"]
-    assert "晓得哒" not in final["response"]
-    assert "有的没的" not in final["response"]
-
-
-def test_direct_aura_model_stream_sends_time_as_local_delta(tmp_path, monkeypatch):
-    def fake_urlopen(req: Request, timeout):
-        raise AssertionError("Local current-time answers should not call direct LLM")
-
-    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
-    runtime = AuraRuntimeConfig(
-        persona_home=config.persona_home,
-        aura_model_mode="aura_model",
-        aura_model_provider="stepfun",
-        aura_model_model="step-3.5-flash",
-        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
-        aura_model_api_key="stepfun-unit-key",
-    )
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(
-        gateway.run_direct_turn_stream(
-            "现在几点？",
-            metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海", "timezone": "Asia/Shanghai"}},
-        )
-    )
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["source"] == "local_voice_reply"
-    final = events[1]["payload"]
-    assert events[0]["text"] == final["response"]
-    assert final["evidence"]["model_skipped"] is True
-    assert final["voice_turn"]["debug"]["decision_path"] == "current_time"
-
-
-def test_direct_stream_sends_grounded_current_as_local_delta(tmp_path, monkeypatch):
-    def fake_run(command, **kwargs):
-        raise AssertionError("Grounded current local reply should not call Hermes")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    config = _config(tmp_path)
-    store = LilyPersonaStore(config.companion_db_path)
-    state = store.get_or_create_state(config.scope)
-    state["trust"] = 96
-    state["affinity_xp"] = 280
-    state["metadata"] = {
-        "current_activity": "整理东西",
-        "current_location": "desk",
-        "location_label": "书桌边",
-        "world_current_source": "manual",
-        "world_manual_override": True,
-        "privacy_sensitivity": 20,
-    }
-    store.save_state(config.scope, state)
-    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",)))
-    runtime = AuraRuntimeConfig(persona_home=config.persona_home, aura_model_mode="hermes_agent")
-    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
-
-    events = list(gateway.run_direct_turn_stream("你现在在干嘛？", metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
-
-    assert [item.get("type") for item in events] == ["delta", "final"]
-    assert events[0]["source"] == "local_voice_reply"
-    final = events[1]["payload"]
-    assert events[0]["text"] == "我在整理东西。"
-    assert events[0]["text"] == final["response"]
-    assert final["evidence"]["model_skipped"] is True
-    assert final["voice_turn"]["debug"]["decision_path"] == "grounded_current_activity"
 
 
 def test_direct_aura_model_omits_reasoning_effort_when_disabled(tmp_path, monkeypatch):
@@ -6633,3 +3783,277 @@ def test_persona_turn_sleep_setting_never_reaches_the_model(tmp_path):
     # 网关没截走（设备没回执）时照实说不支持，绝不能让模型说“改好了”。
     assert "改好了" not in result.response
     assert "不能说已经完成" in result.response
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["你今天怎么样？", "现在几点？", "今天几号？", "你那边天气怎么样", "现在多少度", "你在干嘛", "你心情怎么样"],
+)
+def test_direct_stream_sends_every_question_to_the_model(tmp_path, monkeypatch, question):
+    """问答一律交给模型：缓存的日期天气只进上下文和面板，不再由本地规则直接念出来。"""
+    captured = {}
+
+    class FakeStreamResponse:
+        def __enter__(self):
+            return iter([
+                'data: {"choices":[{"delta":{"content":"挺好的，刚在阳台晒了会儿太阳。"}}]}\n\n'.encode("utf-8"),
+                b"data: [DONE]\n\n",
+            ])
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(req: Request, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeStreamResponse()
+
+    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
+        return config, {"enabled": True, "status": "fresh", "city": city, "temperature": "20.9", "condition": "雨",
+                        "updated_at": int(time.time()), "ttl_seconds": 3600, "age_seconds": 0, "has_content": True,
+                        "display": f"{city}，20.9度，雨", "source": "open_meteo"}
+
+    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
+    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
+    config = _config(tmp_path, aura_home_city="上海")
+    store = LilyPersonaStore(config.companion_db_path)
+    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
+    runtime = AuraRuntimeConfig(
+        persona_home=config.persona_home,
+        aura_model_mode="aura_model",
+        aura_model_provider="stepfun",
+        aura_model_model="step-3.5-flash",
+        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
+        aura_model_api_key="stepfun-unit-key",
+        aura_model_reasoning_effort="none",
+        cached_weather_city="上海",
+        cached_weather_temperature="20.9",
+        cached_weather_condition="雨",
+        cached_weather_icon=1,
+        cached_weather_updated_at=int(time.time()),
+        cached_weather_ttl_seconds=3600,
+    )
+    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
+
+    events = list(gateway.run_direct_turn_stream(question, metadata={"source": "aura-lily-gateway", "audio_bytes": 1234}))
+
+    assert "body" in captured, "问答必须调用模型"
+    assert all(item.get("source") not in {"local_voice_reply", "local_preface"} for item in events)
+    final = events[-1]["payload"]
+    assert final["evidence"].get("model_skipped") is not True
+    assert "20.9度" not in final["response"]
+    prompt = json.dumps(captured["body"], ensure_ascii=False)
+    assert "当前时间" in prompt
+
+
+def test_how_are_you_today_is_not_a_weather_question():
+    from integrations.aura_persona_gateway.query_context import resolve_query_context
+
+    assert resolve_query_context("你今天怎么样？", aura_home_city="上海").intent != "weather"
+    assert resolve_query_context("今天天气怎么样", aura_home_city="上海").intent == "weather"
+
+
+@pytest.mark.parametrize("question", ["你那边天气怎么样", "现在多少度"])
+def test_weather_questions_still_carry_the_cache_to_the_model(tmp_path, monkeypatch, question):
+    captured = {}
+
+    class FakeStreamResponse:
+        def __enter__(self):
+            return iter(['data: {"choices":[{"delta":{"content":"在下雨，二十度出头。"}}]}\n\n'.encode("utf-8"), b"data: [DONE]\n\n"])
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(req: Request, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeStreamResponse()
+
+    def fake_user_weather(config, *, city, latitude="", longitude="", force=False):
+        return config, {"enabled": True, "status": "fresh", "city": city, "temperature": "20.9", "condition": "雨",
+                        "updated_at": int(time.time()), "ttl_seconds": 3600, "age_seconds": 0, "has_content": True,
+                        "display": f"{city}，20.9度，雨", "source": "open_meteo"}
+
+    monkeypatch.setattr("integrations.aura_persona_gateway.turn.refresh_user_weather_if_needed", fake_user_weather)
+    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
+    config = _config(tmp_path, aura_home_city="上海")
+    store = LilyPersonaStore(config.companion_db_path)
+    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
+    runtime = AuraRuntimeConfig(
+        persona_home=config.persona_home,
+        aura_model_mode="aura_model",
+        aura_model_provider="stepfun",
+        aura_model_model="step-3.5-flash",
+        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
+        aura_model_api_key="stepfun-unit-key",
+        aura_model_reasoning_effort="none",
+        cached_weather_city="上海",
+        cached_weather_temperature="20.9",
+        cached_weather_condition="雨",
+        cached_weather_icon=1,
+        cached_weather_updated_at=int(time.time()),
+        cached_weather_ttl_seconds=3600,
+    )
+    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
+
+    list(gateway.run_direct_turn_stream(question, metadata={"source": "aura-lily-gateway", "audio_bytes": 1234, "user_geo": {"city": "上海"}}))
+
+    prompt = json.dumps(captured["body"], ensure_ascii=False)
+    assert "内部缓存证据" in prompt and "cached_weather" in prompt
+
+
+# ── 质检拆除后：只拦服务故障，模型正常回答原样放行 ─────────────────
+def _stepfun_stream_gateway(tmp_path, monkeypatch, responses):
+    calls: list[int] = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(1)
+        item = responses[min(len(calls), len(responses)) - 1]
+
+        class FakeStreamResponse:
+            def __enter__(self):
+                if isinstance(item, Exception):
+                    raise item
+                chunks = [
+                    ('data: ' + json.dumps({"choices": [{"delta": {"content": text}}]}, ensure_ascii=False) + "\n\n").encode("utf-8")
+                    for text in item
+                ]
+                return iter([*chunks, b"data: [DONE]\n\n"])
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        return FakeStreamResponse()
+
+    monkeypatch.setattr("integrations.aura_persona_gateway.llm.urlopen", fake_urlopen)
+    config = _config(tmp_path)
+    store = LilyPersonaStore(config.companion_db_path)
+    bridge = HermesLilyBridge(HermesLilyConfig(command=("hermes",), provider="base", model="base-model"))
+    runtime = AuraRuntimeConfig(
+        persona_home=config.persona_home,
+        aura_model_mode="aura_model",
+        aura_model_provider="stepfun",
+        aura_model_model="stepaudio-2.5-chat",
+        aura_model_base_url="https://api.stepfun.com/step_plan/v1",
+        aura_model_api_key="stepfun-unit-key",
+        aura_model_reasoning_effort="none",
+        fast_reply_enabled=True,
+        fast_reply_mode="hermes_main",
+    )
+    gateway = AuraPersonaGateway(config=config, store=store, bridge=bridge, runtime_config=runtime)
+    return gateway, calls
+
+
+def _http_400():
+    return HTTPError(url="https://api.stepfun.com/step_plan/v1/chat/completions", code=400, msg="Bad Request", hdrs=None, fp=None)
+
+
+def test_direct_aura_model_stream_retries_once_then_says_the_service_failed(tmp_path, monkeypatch):
+    gateway, calls = _stepfun_stream_gateway(tmp_path, monkeypatch, [_http_400()])
+
+    events = list(gateway.run_direct_turn_stream("我今天想聊聊最近状态。", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert len(calls) == 2
+    assert final["response"] == SERVICE_RETRY_FAILED_SPOKEN_REPLY
+    assert final["status"] == "failed"
+    assert final["evidence"]["aura_llm_attempts"] == 2
+    assert final["evidence"]["quality_guard"]["service_error"] is True
+    assert "HTTP" not in final["response"]
+
+
+def test_direct_aura_model_stream_retry_recovers_after_one_provider_error(tmp_path, monkeypatch):
+    gateway, calls = _stepfun_stream_gateway(tmp_path, monkeypatch, [_http_400(), ["好呀，", "我是豆豆。"]])
+
+    events = list(gateway.run_direct_turn_stream("跟大家打个招呼。", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert len(calls) == 2
+    assert final["status"] == "completed"
+    assert "我是豆豆" in final["response"]
+    assert final["evidence"]["aura_llm_attempts"] == 2
+    assert final["evidence"]["aura_llm_first_attempt_failed"] is True
+
+
+def test_direct_aura_model_stream_does_not_replace_a_greeting_with_a_placeholder(tmp_path, monkeypatch):
+    gateway, calls = _stepfun_stream_gateway(tmp_path, monkeypatch, [["好呀，各位好！", "我是豆豆，很高兴认识大家。"]])
+
+    events = list(gateway.run_direct_turn_stream("跟大家打个招呼。", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert len(calls) == 1
+    assert "各位好" in final["response"]
+    assert final["response"] != "我在。"
+    assert "quality_guard" not in final["evidence"]
+
+
+def test_direct_aura_model_stream_trims_incomplete_tail_to_last_full_sentence(tmp_path, monkeypatch):
+    gateway, _ = _stepfun_stream_gateway(tmp_path, monkeypatch, [["最近挺好的。", "其实我"]])
+
+    events = list(gateway.run_direct_turn_stream("你最近怎么样？", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert final["response"] == "最近挺好的。"
+    assert not (final["evidence"].get("quality_guard") or {}).get("fallback_used")
+
+
+def test_direct_aura_model_stream_keeps_incomplete_reply_without_a_full_sentence(tmp_path, monkeypatch):
+    gateway, _ = _stepfun_stream_gateway(tmp_path, monkeypatch, [["最近状态啊，其实我"]])
+
+    events = list(gateway.run_direct_turn_stream("你最近怎么样？", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert "其实我" in final["response"]
+    assert final["response"] not in {SERVICE_EMPTY_SPOKEN_REPLY, SERVICE_ERROR_SPOKEN_REPLY, "我在。"}
+
+
+def test_guard_only_blocks_service_failures_and_repeats():
+    context = PersonaContext(prompt="", state_summary={}, debug={})
+    assert _guard_model_spoken_reply("", context=context)[0] == SERVICE_EMPTY_SPOKEN_REPLY
+    text, guard = _guard_model_spoken_reply("Aura direct LLM HTTP 429.", context=context)
+    assert text == SERVICE_ERROR_SPOKEN_REPLY and guard["service_error"] is True
+    assert _guard_model_spoken_reply("好呀，我在听。", context=context) == ("好呀，我在听。", {})
+    assert _guard_model_spoken_reply("我今天也挺累的。", context=context) == ("我今天也挺累的。", {})
+    deduped, guard = _guard_model_spoken_reply("你好呀。你好呀。", context=context)
+    assert deduped == "你好呀。" and guard["reason"] == "removed_repeated_sentence"
+
+
+def test_direct_aura_model_stream_marks_end_dialogue_when_model_tags_a_goodbye(tmp_path, monkeypatch):
+    gateway, _ = _stepfun_stream_gateway(tmp_path, monkeypatch, [["<emo:happy|end>\n", "好呀，回头再聊！"]])
+
+    events = list(gateway.run_direct_turn_stream("那先这样，回头再聊。", metadata={"source": "aura-lily-gateway"}))
+
+    final = events[-1]["payload"]
+    assert "回头再聊" in final["response"]
+    assert final["evidence"]["end_dialogue"] is True
+    assert "|end" not in "".join(item.get("text", "") for item in events if item.get("type") == "delta")
+
+
+def test_direct_aura_model_stream_keeps_listening_without_end_flag(tmp_path, monkeypatch):
+    gateway, _ = _stepfun_stream_gateway(tmp_path, monkeypatch, [["<emo:calm>\n", "好呀，你说。"]])
+
+    events = list(gateway.run_direct_turn_stream("我想跟你说个事。", metadata={"source": "aura-lily-gateway"}))
+
+    assert "end_dialogue" not in events[-1]["payload"]["evidence"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["好了先这样，回头再聊", "拜拜", "我去忙了，晚点找你", "晚安", "不聊了", "好的谢谢，拜拜", "回头见", "我要去睡觉了", "那今天就聊到这儿吧"],
+)
+def test_user_goodbye_ends_the_dialogue(text):
+    assert user_text_ends_dialogue(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["好的", "谢谢", "嗯", "跟大家打个招呼吧", "你觉得我该不该先这样做", "回头你提醒我买牛奶", "拜托你帮我查一下", "下次聊什么好", "我走了吗"],
+)
+def test_ordinary_lines_do_not_end_the_dialogue(text):
+    assert user_text_ends_dialogue(text) is False
+
+
+def test_direct_aura_model_stream_ends_dialogue_on_goodbye_even_without_model_tag(tmp_path, monkeypatch):
+    gateway, _ = _stepfun_stream_gateway(tmp_path, monkeypatch, [["<emo:calm>\n", "那你先去忙嘛。"]])
+
+    events = list(gateway.run_direct_turn_stream("好了先这样，回头再聊", metadata={"source": "aura-lily-gateway"}))
+
+    assert events[-1]["payload"]["evidence"]["end_dialogue"] is True

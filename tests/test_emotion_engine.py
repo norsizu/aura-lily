@@ -194,10 +194,33 @@ def test_stripper_returns_nothing_when_the_reply_is_only_a_tag():
     assert stripper.finish() == ""
 
 
+def test_stripper_strips_a_malformed_tag_with_a_gt_instead_of_a_colon():
+    # 线上真实输出：模型把 "<emo:happy>" 写成 "<emo>happy>"，以前 "happy>" 会被念出来。
+    stripper = EmotionTagStripper()
+    assert stripper.feed("<emo>happy> 各位好！我是豆豆。").lstrip() == "各位好！我是豆豆。"
+    assert stripper.emotion == "happy"
+    assert strip_emotion_tag("<emo>pouty>哎呀") == ("哎呀", "pouty")
+
+
+def test_stripper_handles_a_malformed_tag_split_across_chunks():
+    stripper = EmotionTagStripper()
+    assert stripper.feed("<emo>") == ""
+    assert stripper.feed("hap") == ""
+    assert stripper.feed("py>你好") == "你好"
+    assert stripper.emotion == "happy"
+
+
+def test_stripper_never_leaks_an_unfinished_malformed_tag():
+    stripper = EmotionTagStripper()
+    assert stripper.feed("<emo>hap") == ""
+    assert stripper.finish() == ""
+
+
 def test_strip_mid_emotion_tags_only_touches_emo_tags():
     assert strip_mid_emotion_tags("a<emo:sad>b") == "ab"
     assert strip_mid_emotion_tags("a<b>c") == "a<b>c"
     assert strip_mid_emotion_tags("< EMO : happy >") == ""
+    assert strip_mid_emotion_tags("好<emo>sad>的") == "好的"
 
 
 def test_strip_emotion_tag_handles_the_non_streaming_path():
@@ -441,3 +464,26 @@ def test_narrative_find_is_not_a_lookup_request():
     assert _agent_lookup_hit("帮我找一下附近的宠物医院")
     assert _agent_lookup_hit("我找了半天，你帮我搜搜附近的宠物医院")
     assert _agent_lookup_hit("帮我找回密码")
+
+
+def test_stripper_reads_the_end_dialogue_flag_from_the_tag():
+    stripper = EmotionTagStripper()
+    out = "".join(stripper.feed(chunk) for chunk in ("<emo:hap", "py|e", "nd>\n好，回头聊！")) + stripper.finish()
+    assert out.strip() == "好，回头聊！"
+    assert stripper.emotion == "happy"
+    assert stripper.end_dialogue is True
+
+
+def test_stripper_end_dialogue_defaults_to_false():
+    stripper = EmotionTagStripper()
+    out = stripper.feed("<emo:sad>\n嗯，我在听。") + stripper.finish()
+    assert out.strip() == "嗯，我在听。"
+    assert stripper.end_dialogue is False
+
+
+def test_stripper_reads_end_flag_from_a_malformed_tag():
+    stripper = EmotionTagStripper()
+    out = stripper.feed("<emo>happy|end> 拜拜") + stripper.finish()
+    assert out.strip() == "拜拜"
+    assert stripper.end_dialogue is True
+    assert strip_mid_emotion_tags("好<emo:happy|end>的") == "好的"

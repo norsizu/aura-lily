@@ -4,7 +4,11 @@ import re
 from dataclasses import dataclass
 
 
-FALLBACK_SPOKEN_REPLY = "我在。"
+# 服务故障提示：明确告诉用户是服务本身出错，而不是 Aura 自己答得不好。
+SERVICE_EMPTY_SPOKEN_REPLY = "大模型刚才没返回消息咧。换个问法再试试，还不行就去查后台日志吧。"
+SERVICE_ERROR_SPOKEN_REPLY = "服务接口刚才报错了咧。换个说法再问问看，还是不行请检查后台日志。"
+SERVICE_RETRY_FAILED_SPOKEN_REPLY = "我帮你重试了一次，服务还是出错咧。换句话再问问，不行请查后台日志咯。"
+FALLBACK_SPOKEN_REPLY = SERVICE_EMPTY_SPOKEN_REPLY
 SPOKEN_REPLY_INSTRUCTION = (
     "这不是小说、剧本或角色扮演旁白任务；你要生成的是 Aura 准备直接说出口的话。"
     "回复会直接显示在设备屏幕并用于 TTS 朗读；只输出口语回复本身。"

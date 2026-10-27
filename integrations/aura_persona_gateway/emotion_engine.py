@@ -85,7 +85,9 @@ EMOTION_TAG_INSTRUCTION = (
     "回复的第一行必须先输出 <emo:X>，X 只能取 "
     + "/".join(EMOTIONS)
     + " 中的一个，然后换行，之后才说你要讲的话。"
-    "这个标签是给系统读的，不要念出来，也不要解释它。"
+    "这个标签是给系统读的，不要念出来，也不要解释它。\n"
+    "如果用户这句话是在收尾、想结束这次对话（比如回头再聊、先这样、我去忙了、拜拜、晚安、不聊了），"
+    "标签写成 <emo:X|end>，正常道个别就好；用户还在聊、只是顺口一句时不要加 |end。"
 )
 
 # 上一轮情绪进提示词的那一行（E3）。
@@ -140,17 +142,28 @@ EMOTION_TAG_PREFIX = "<emo:"
 # 免得一个畸形的 "<" 把整段回复都憋在缓冲区里。
 EMOTION_TAG_MAX_CHARS = 24
 
-_TAG_BODY_RE = re.compile(r"^emo\s*:\s*([A-Za-z_][A-Za-z0-9_]*)$")
+_TAG_BODY_RE = re.compile(r"^emo\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\|\s*end)?$", re.IGNORECASE)
+# 模型偶尔把冒号写成 ">"：``<emo>happy>``。照样认作标签，否则 "happy>" 会进字幕被念出来。
+_MALFORMED_TAG_RE = re.compile(r"^<\s*emo\s*>\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\|\s*end)?\s*>", re.IGNORECASE)
+_MALFORMED_TAG_PARTIAL_RE = re.compile(r"^<\s*emo\s*>\s*[A-Za-z0-9_]*\s*(?:\|\s*[A-Za-z]*\s*)?$", re.IGNORECASE)
 # 回复中间重复出现的标签（模型偶尔会写两遍）直接删掉。
-_MID_TAG_RE = re.compile(r"<\s*emo\s*:[^<>\r\n]{0,40}>", re.IGNORECASE)
+_MID_TAG_RE = re.compile(
+    r"<\s*emo\s*:[^<>\r\n]{0,40}>|<\s*emo\s*>\s*[A-Za-z_][A-Za-z0-9_]{0,20}\s*(?:\|\s*end\s*)?>",
+    re.IGNORECASE,
+)
 
 
 def _tag_value(body: str) -> str | None:
-    """``emo:sad`` → ``sad``；不是情绪标签 body 时返回 None。"""
+    """``emo:sad`` / ``emo:sad|end`` → ``sad``；不是情绪标签 body 时返回 None。"""
     match = _TAG_BODY_RE.match(str(body or "").strip())
     if not match:
         return None
     return match.group(1).strip().lower()
+
+
+def _tag_ends_dialogue(body: str) -> bool:
+    match = _TAG_BODY_RE.match(str(body or "").strip())
+    return bool(match and match.group(2))
 
 
 def _looks_like_tag_start(text: str) -> bool:
@@ -193,6 +206,12 @@ class EmotionTagStripper:
         self._started = False
         self._emotion = ""
         self._raw = ""
+        self._end_dialogue = False
+
+    @property
+    def end_dialogue(self) -> bool:
+        """模型在标签里写了 ``|end``：用户想结束这次对话，这轮说完不再续听。"""
+        return self._end_dialogue
 
     @property
     def emotion(self) -> str:
@@ -227,7 +246,7 @@ class EmotionTagStripper:
             probe = buffer.lstrip()
             if not probe:
                 return ""
-            if _looks_like_tag_start(probe):
+            if _looks_like_tag_start(probe) or _MALFORMED_TAG_PARTIAL_RE.match(probe):
                 # 没闭合的情绪标签：宁可丢字也不能把 "<emo:" 漏进字幕/TTS。
                 return ""
             return strip_mid_emotion_tags(probe)
@@ -245,6 +264,18 @@ class EmotionTagStripper:
             # 全是前导空白，继续等第一个有效字符。
             return ""
         lowered = probe.lower()
+        malformed = _MALFORMED_TAG_RE.match(probe)
+        if malformed:
+            value = malformed.group(1).strip().lower()
+            self._started = True
+            self._buffer = ""
+            self._end_dialogue = bool(malformed.group(2))
+            self._raw = value
+            self._emotion = value if value in EMOTIONS else ""
+            return self._feed_body(probe[malformed.end() :])
+        if _MALFORMED_TAG_PARTIAL_RE.match(probe) and len(self._buffer) <= EMOTION_TAG_MAX_CHARS:
+            # "<emo>hap" 还没写完第二个 ">"，继续等。
+            return ""
         close = probe.find(">")
         if probe[0] == "<" and close >= 0:
             body = probe[1:close]
@@ -256,6 +287,7 @@ class EmotionTagStripper:
                 return self._feed_body(probe)
             self._raw = value
             self._emotion = value if value in EMOTIONS else ""
+            self._end_dialogue = _tag_ends_dialogue(body)
             return self._feed_body(probe[close + 1 :])
         if probe[0] != "<" and close < 0:
             # 第一行不是标签，也不会再变成标签：立刻放行（前导空白一起丢掉）。
