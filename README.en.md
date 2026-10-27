@@ -54,6 +54,7 @@ Aura Lily is built around the Waveshare [ESP32-S3-RLCD-4.2 board](https://docs.w
 | Area | Included |
 | --- | --- |
 | Voice turns | Device recording, Opus uplink, ASR, streamed text replies, and TTS audio return. Captions progress with actual audio playback. |
+| Continuous dialogue | When the server keeps the session listening, the device uses local VAD and submits the next turn after about 2 seconds of silence; press Left or BOOT to exit. Wrap-ups such as "talk later", "I have to go", or "bye" end the session: she says goodbye and the device returns to idle instead of recording again. |
 | Three languages | Chinese, English, and Japanese UI and speech routing, including localized quota prompts. |
 | Everyday world | Optional state, schedule, and world layer. Scheduled meals, rest, outings, and purchases settle real state effects. |
 | Local networking | Two saved Wi-Fi credential slots with real SSID labels and manual switching. |
@@ -63,6 +64,7 @@ Aura Lily is built around the Waveshare [ESP32-S3-RLCD-4.2 board](https://docs.w
 | World ledger | Every mood, energy, and location change is recorded with before/after values and a reason; after an hour or more away, she can tell you what she has been doing. |
 | Voice settings and background tasks | One sentence changes the sleep timeout and the device confirms it; weather lookups run in the background and she reports back when idle; reminders go into the ledger. |
 | X-Ray screen | Self-hosted read-only screen that replays each turn's emotional reasoning and the day's ledger; see below. |
+| Honest service errors | An empty model reply or a provider error is retried once; if it still fails, she says plainly that the service failed and suggests rephrasing or checking the server logs, instead of a filler line that sounds like her own answer. Normal model replies are no longer rewritten. |
 
 ## Architecture
 

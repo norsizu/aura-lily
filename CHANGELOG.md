@@ -2,6 +2,37 @@
 
 All notable public-release changes are documented here.
 
+## v0.19.1-public - 2026-10-27
+
+Server-side release. Firmware and `assets` stay at 0.19.0; no reflash is
+needed if the device already runs 0.19.0.
+
+### Added
+
+- Saying goodbye ends continuous dialogue. Wrap-ups such as "回头再聊",
+  "我去忙了", "拜拜", or "晚安" send `continue_listening=false`, so after
+  her goodbye the device goes back to idle instead of opening another
+  recording round. The model can mark the turn with `<emo:X|end>`, and a
+  deterministic phrase check covers turns where it forgets.
+- The LLM stream is retried once when it fails before producing any text.
+
+### Changed
+
+- The content quality guard is removed. Normal model replies are no longer
+  held back, rewritten, or replaced with topic templates. Only service
+  failures are caught: an empty reply or a provider error now says that the
+  service failed and suggests rephrasing or checking the server logs,
+  instead of a canned "我在。" that sounds like her own answer.
+- A half-finished trailing sentence in a streamed reply is trimmed back to
+  the last complete sentence.
+- StepFun WebSocket TTS buffers briefly before playback (tunable with
+  `AURA_TTS_START_HOLD_*`) so slow synthesis no longer stutters after the
+  device prefetch drains.
+
+### Fixed
+
+- "你今天怎么样" is no longer treated as a weather question.
+
 ## v0.19.0-public - 2026-10-24
 
 ### Added
